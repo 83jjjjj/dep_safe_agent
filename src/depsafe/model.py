@@ -1,7 +1,6 @@
 
 import litellm
 import json
-import os
 
 BASH_TOOL = {
     "type": "function",
@@ -42,9 +41,10 @@ class LitellmModel:
         # 获取tool_calls转化为合法格式，纳入extra部分
         tool_calls = response.choices[0].message.tool_calls
         actions = []
-        for tool_call in tool_calls:
-            args = json.loads(tool_call.function.arguments)
-            actions.append({"command": args["command"], "tool_call_id": tool_call.id})
+        if tool_calls:
+            for tool_call in tool_calls:
+                args = json.loads(tool_call.function.arguments)
+                actions.append({"command": args["command"], "tool_call_id": tool_call.id})
         message = response.choices[0].message.model_dump()
         message["extra"] = {"actions": actions}
         return message
@@ -57,6 +57,6 @@ class LitellmModel:
             tool_message = {}
             tool_message["role"] = "tool"
             tool_message["tool_call_id"] = action["tool_call_id"]
-            tool_message["content"] = output # ?
+            tool_message["content"] = json.dumps(output, ensure_ascii=False)
             tool_messages.append(tool_message)
         return tool_messages

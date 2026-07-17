@@ -1,11 +1,13 @@
 
 import os
 import yaml
+import platform
 from pathlib import Path
 from jinja2 import StrictUndefined, Template
 
 from depsafe import package_dir
 from depsafe.model import LitellmModel
+from depsafe.exceptions import Submitted
 from depsafe.environment import LocalEnvironment
 
 class DepSafeAgent:
@@ -17,10 +19,16 @@ class DepSafeAgent:
 
     def run(self, task: str):
         self.config["task"] = task
+        self.config.update(platform.uname()._asdict())
         self.messages.append({"role": "system", "content": Template(self.config["system_template"], undefined=StrictUndefined).render(**self.config)})
         self.messages.append({"role": "user", "content": Template(self.config["instance_template"], undefined=StrictUndefined).render(**self.config)})
         while True:
-            self.step()
+            try:
+                self.step()
+            except Submitted as e:
+                self.messages.append(e.message)
+            if self.messages[-1]["role"] == "exit":
+                break
     
     def step(self):
         ai_message = self.query()
