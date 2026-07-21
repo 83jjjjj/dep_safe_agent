@@ -2,9 +2,6 @@
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-# ============================================================
-# [project] — 别人 pip install 你的包时读的元数据
-# ============================================================
 [project]
 name = "depsafe"
 version = "0.1.0"
@@ -13,7 +10,7 @@ readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.10"
 authors = [
-    {name = "刘奎源", email = "your-email@example.com"},
+    {name = "刘奎源", email = "liukuiyuan0424@qq.com"},
 ]
 keywords = ["agent", "security", "cve", "dependency", "python", "swe-agent"]
 classifiers = [
@@ -27,7 +24,6 @@ classifiers = [
     "Topic :: Software Development :: Quality Assurance",
 ]
 
-# ---- 核心依赖 ----
 dependencies = [
     "litellm>=1.50.0",     # 统一 LLM 调用接口
     "httpx>=0.27.0",       # 异步 HTTP 客户端，调 OSV API
@@ -39,7 +35,6 @@ dependencies = [
     "typer>=0.27.0",
 ]
 
-# ---- 可选依赖 ----
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
@@ -52,25 +47,17 @@ eval = [
     "tabulate>=0.9.0",     # 表格化输出评估结果
 ]
 
-# ---- 入口点：装完包后终端直接敲 depsafe ----
 [project.scripts]
 depsafe = "depsafe.cli:main"
 
-# ---- 项目链接 ----
 [project.urls]
 Homepage = "https://github.com/83jjjjj/dep_safe"
 Repository = "https://github.com/83jjjjj/dep_safe"
 Issues = "https://github.com/83jjjjj/dep_safe/issues"
 
-# ============================================================
-# [tool.hatch.build.targets.wheel] — 打包配置
-# ============================================================
 [tool.hatch.build.targets.wheel]
 packages = ["src/depsafe"]
 
-# ============================================================
-# [tool.ruff] — 代码风格/lint 配置
-# ============================================================
 [tool.ruff]
 target-version = "py310"
 line-length = 100
@@ -88,9 +75,6 @@ select = [
 [tool.ruff.lint.isort]
 known-first-party = ["depsafe"]
 
-# ============================================================
-# [tool.pytest.ini_options] — 测试配置
-# ============================================================
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
@@ -101,9 +85,6 @@ markers = [
 ]
 addopts = "-v --strict-markers"
 
-# ============================================================
-# [tool.depsafe] — 你自己项目的专属配置
-# ============================================================
 [tool.depsafe]
 default_model = "deepseek/deepseek-chat"
 max_steps = 10
