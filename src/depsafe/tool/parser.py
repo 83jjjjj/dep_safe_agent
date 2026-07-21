@@ -30,7 +30,7 @@ def parse_deps(file_path: str) -> List[Dependency]:
     deps = []
     if file_name in ["requirements.txt", "requirements.in"]:
         for line in path.read_text().splitlines():
-            if dep := _parse_requirement_line(line, DepCategory.PRODUCTION, "requirements.txt"):
+            if dep := _parse_requirement_line(line, "requirements.txt", DepCategory.PRODUCTION):
                 deps.append(dep)
         return deps
     elif file_name == "pyproject.toml":
@@ -38,7 +38,7 @@ def parse_deps(file_path: str) -> List[Dependency]:
             data = tomllib.load(f)
         raw_deps = data.get("project", {}).get("dependencies", [])
         for dep_str in raw_deps:
-            if dep := _parse_requirement_line(dep_str, DepCategory.PRODUCTION, "pyproject.toml"):
+            if dep := _parse_requirement_line(dep_str, "pyproject.toml", DepCategory.PRODUCTION):
                 deps.append(dep)
         return deps
     elif file_name == "Pipfile":
@@ -47,7 +47,7 @@ def parse_deps(file_path: str) -> List[Dependency]:
         for pkg_name, pkg_spec in data.get("packages", {}).items():
             version = pkg_spec if isinstance(pkg_spec, str) else pkg_spec.get("version", "*")
             line = f"{pkg_name}{version}" if version != "*" else pkg_name
-            if dep := _parse_requirement_line(line, DepCategory.PRODUCTION, "Pipfile"):
+            if dep := _parse_requirement_line(line, "Pipfile", DepCategory.PRODUCTION):
                 deps.append(dep)
         return deps
     return deps
