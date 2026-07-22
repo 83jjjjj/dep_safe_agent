@@ -1,7 +1,15 @@
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
+import os
 import httpx
 from typing import List, Optional
+from packaging.version import Version
+from packaging.specifiers import SpecifierSet
 from pydantic import BaseModel, Field, ValidationError, ConfigDict
+
 
 class Vulnerability(BaseModel):
     model_config = ConfigDict(frozen=True) # 开启基于字段值的去重和哈希
@@ -72,7 +80,79 @@ def check_cve(pkg: str, ver: str) -> List[Vulnerability]:
             print(f"数据模型校验失败: {e}")
     return list(set(vulnerabilities))
 
+def check_github_advisory(pkg: str, ver: str) -> List[Vulnerability]:
+    """
+    查询 GitHub Advisory Database 获取漏洞信息 (作为 OSV 的 Fallback)
+
+    Args:
+        pkg: 依赖包的名称，例如 "requests" 或 "litellm"。
+        ver: 依赖包的精确版本号，例如 "2.25.1"。
+
+    Returns:
+        包含漏洞信息的 Vulnerability 对象列表。如果该版本没有已知漏洞，
+        或者 API 请求失败，则返回空列表。    
+    """
+    token = os.getenv("GITHUB_TOKEN")
+    if not token:
+        print("未找到 GITHUB_TOKEN，跳过 GitHub Advisory 查询")
+        return []
+    url = "https://api.github.com/graphql"
+    headers = {"Authorization": f"Bearer {token}"}
+    query = """
+    query($pkg: String!) {
+      securityVulnerabilities(ecosystem: PIP, package: $pkg, first: 10) {
+        nodes {
+          advisory {
+            ghsaId
+            summary
+            description
+            severity
+            identifiers { type value }
+          }
+          vulnerableVersionRange
+          firstPatchedVersion { identifier }
+        }
+      }
+    }
+    """
+    variables = {"pkg": pkg}
+    try:
+        response = httpx.post(url, json={"query": query, "variables": variables}, headers=headers, timeout=10.0)
+        response.raise_for_status()
+        data = response.json()
+    except Exception as e:
+        print(f"请求 GitHub Advisory API 失败: {e}")
+        return []
+    vulnerabilities = []
+    nodes = data.get("data", {}).get("securityVulnerabilities", {}).get("nodes", [])
+    current_ver = Version(ver)
+    for node in nodes:
+        vuln_range_str = node.get("vulnerableVersionRange")
+        if vuln_range_str:
+            try:
+                # 跳过不受影响版本规则集合
+                spec = SpecifierSet(vuln_range_str)
+                if current_ver not in spec:
+                    continue
+            except Exception:
+                pass
+        advisory = node.get("advisory", {})
+        cve_id = next((i["value"] for i in advisory.get("identifiers", []) if i["type"] == "CVE"), None)
+        patched = node.get("firstPatchedVersion")
+        fixed_ver = patched.get("identifier") if patched else None
+        try:
+            vulnerabilities.append(Vulnerability(
+                pkg_name=pkg,
+                cve_id=cve_id,
+                severity=advisory.get("severity"),
+                fixed_ver=fixed_ver,
+                desc=advisory.get("summary", "")
+            ))
+        except ValidationError as e:
+            print(f"GitHub 数据模型校验失败: {e}")
+    return vulnerabilities
+
 if __name__ == "__main__":
-    results = check_cve("requests", "2.25.1")
+    results = check_github_advisory("requests", "2.25.1")
     json_output = [vuln.model_dump(mode="json") for vuln in results]
     print(json_output)
