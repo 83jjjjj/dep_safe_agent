@@ -21,7 +21,13 @@ class Dependency(BaseModel):
 
 def parse_deps(file_path: str) -> List[Dependency]:
     """
-    统一读取 requirements.txt / pyproject.toml / Pipfile 并返回依赖列表
+    统一读取项目依赖文件并返回依赖列表
+
+    Args:
+        file_path: 包含 requirements.txt / pyproject.toml / Pipfile 中的一种的文件路径。
+
+    Returns:
+        项目依赖包列表，仅限生产环境。
     """
     path = Path(file_path)
     if not path.exists():
