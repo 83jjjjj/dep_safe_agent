@@ -22,7 +22,7 @@ class Vulnerability(BaseModel):
 
 def check_cve(pkg: str, ver: str) -> List[Vulnerability]:
     """
-    查询指定包和版本的已知漏洞
+    查询指定包和版本的已知漏洞，使用OSV API
 
     Args:
         pkg: 依赖包的名称，例如 "requests" 或 "litellm"。
