@@ -2,6 +2,7 @@
 
 from unittest.mock import patch, MagicMock
 from depsafe.tool.cve_checker import check_cve
+from depsafe.tool.cve_checker import check_github_advisory
 
 
 class TestCheckCve:
@@ -69,4 +70,69 @@ class TestCheckCve:
     def test_api_error_returns_empty(self):
         with patch("httpx.post", side_effect=Exception("timeout")):
             results = check_cve("flask", "2.3.1")
+        assert results == []
+
+class TestGitHubAdvisory:
+    def test_no_token_returns_empty(self, monkeypatch):
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        results = check_github_advisory("flask", "2.3.1")
+        assert results == []
+
+    def test_detects_vulnerable_version(self, monkeypatch):
+        monkeypatch.setenv("GITHUB_TOKEN", "fake-token")
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "data": {
+                "securityVulnerabilities": {
+                    "nodes": [{
+                        "vulnerableVersionRange": ">= 2.3.0, < 2.3.3",
+                        "firstPatchedVersion": {"identifier": "2.3.3"},
+                        "advisory": {
+                            "ghsaId": "GHSA-xxxx-xxxx-xxxx",
+                            "summary": "Flask session leak",
+                            "severity": "HIGH",
+                            "identifiers": [
+                                {"type": "CVE", "value": "CVE-2023-30861"}
+                            ]
+                        }
+                    }]
+                }
+            }
+        }
+        mock_resp.raise_for_status = MagicMock()
+        with patch("httpx.post", return_value=mock_resp):
+            results = check_github_advisory("flask", "2.3.1")
+        assert len(results) == 1
+        assert results[0].cve_id == "CVE-2023-30861"
+        assert results[0].fixed_ver == "2.3.3"
+        assert results[0].severity == "HIGH"
+
+    def test_version_not_in_range_is_skipped(self, monkeypatch):
+        monkeypatch.setenv("GITHUB_TOKEN", "fake-token")
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "data": {
+                "securityVulnerabilities": {
+                    "nodes": [{
+                        "vulnerableVersionRange": "< 2.0",  # 只影响 2.0 以下
+                        "firstPatchedVersion": {"identifier": "2.0.0"},
+                        "advisory": {
+                            "ghsaId": "GHSA-yyyy",
+                            "summary": "Old issue",
+                            "severity": "LOW",
+                            "identifiers": []
+                        }
+                    }]
+                }
+            }
+        }
+        mock_resp.raise_for_status = MagicMock()
+        with patch("httpx.post", return_value=mock_resp):
+            results = check_github_advisory("flask", "3.0.0")  # 3.0.0 不在 <2.0 范围内
+        assert results == []
+
+    def test_api_error_returns_empty(self, monkeypatch):
+        monkeypatch.setenv("GITHUB_TOKEN", "fake-token")
+        with patch("httpx.post", side_effect=Exception("timeout")):
+            results = check_github_advisory("flask", "2.3.1")
         assert results == []
