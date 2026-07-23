@@ -19,7 +19,7 @@ class Dependency(BaseModel):
     category: DepCategory
 
 
-def parse_deps(file_path: str) -> List[Dependency]:
+def parse_deps(file_path: str) -> List[dict]:
     """
     统一读取项目依赖文件并返回依赖列表
 
@@ -38,7 +38,6 @@ def parse_deps(file_path: str) -> List[Dependency]:
         for line in path.read_text().splitlines():
             if dep := _parse_requirement_line(line, "requirements.txt", DepCategory.PRODUCTION):
                 deps.append(dep)
-        return deps
     elif file_name == "pyproject.toml":
         with open(path, "rb") as f:
             data = tomllib.load(f)
@@ -46,7 +45,6 @@ def parse_deps(file_path: str) -> List[Dependency]:
         for dep_str in raw_deps:
             if dep := _parse_requirement_line(dep_str, "pyproject.toml", DepCategory.PRODUCTION):
                 deps.append(dep)
-        return deps
     elif file_name == "Pipfile":
         with open(path, "rb") as f:
             data = tomllib.load(f)
@@ -55,8 +53,7 @@ def parse_deps(file_path: str) -> List[Dependency]:
             line = f"{pkg_name}{version}" if version != "*" else pkg_name
             if dep := _parse_requirement_line(line, "Pipfile", DepCategory.PRODUCTION):
                 deps.append(dep)
-        return deps
-    return deps
+    return [dep.model_dump(mode='json') for dep in deps]
 
 def _parse_requirement_line(line: str, source_file: str, category: DepCategory = DepCategory.PRODUCTION) -> Optional[Dependency]:
     line = line.strip()
