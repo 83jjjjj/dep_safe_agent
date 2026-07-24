@@ -75,29 +75,32 @@ def _compile_dependencies(file_path: str) -> List[Dependency]:
         if result.exit_code != 0:
             print(f"pip-compile 解析失败: {result.exception}")
             return []
-        # 读取 pip-compile 生成的精确版本列表
-        resolved_deps = []
-        with open(tmp_out_path, "r") as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                marker = None
-                if ";" in line:
-                    line, marker = line.split(";", 1)
-                    line, marker = line.strip(), marker.strip()
-                if "==" in line:
-                    name, version = line.split("==", 1)
-                    resolved_deps.append(Dependency(
-                        name=name.strip(),
-                        version_spec=f"=={version.strip()}",
-                        marker=marker,
-                        source_file=file_path,
-                        category=DepCategory.PRODUCTION
-                    ))
-        return resolved_deps
+        return _parse_compiled_output(tmp_out_path, file_path)
     finally:
         Path(tmp_out_path).unlink(missing_ok=True)
+
+def _parse_compiled_output(tmp_out_path: str, file_path: str) -> List[Dependency]:
+    # 读取 pip-compile 生成的精确版本列表
+    resolved_deps = []
+    with open(tmp_out_path, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            marker = None
+            if ";" in line:
+                line, marker = line.split(";", 1)
+                line, marker = line.strip(), marker.strip()
+            if "==" in line:
+                name, version = line.split("==", 1)
+                resolved_deps.append(Dependency(
+                    name=name.strip(),
+                    version_spec=f"=={version.strip()}",
+                    marker=marker,
+                    source_file=file_path,
+                    category=DepCategory.PRODUCTION
+                ))
+    return resolved_deps
 
 def _compile_pipfile_dependencies(pipfile_path: Path) -> List[Dependency]:
     """
