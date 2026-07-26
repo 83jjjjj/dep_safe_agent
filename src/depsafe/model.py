@@ -87,15 +87,19 @@ class LitellmModel:
         self.model_name = model_name
         self.api_key = api_key
     
-    def query(self, messages: list[dict]) -> dict:
+    async def query(self, messages: list[dict], response_format: Optional[type[BaseModel]] = None) -> dict:
         # 与lm交互，获取ai_message，必须有tool_calls
+        completion_kwargs = {
+            "model": self.model_name,
+            "messages": messages,
+            "tools": [BASH_TOOL, *CUSTOM_TOOLS],
+            "base_url": "https://api.deepseek.com",
+            "api_key": self.api_key,
+        }
+        if response_format:
+            completion_kwargs["response_format"] = response_format
         try:
-            response = litellm.completion(
-                model=self.model_name,
-                messages=messages,
-                tools=[BASH_TOOL, *CUSTOM_TOOLS],
-                base_url="https://api.deepseek.com"
-            )
+            response = await litellm.acompletion(**completion_kwargs)
         except litellm.exceptions.AuthenticationError as e:
             e.message += " You can permanently set your API key with `depsafe-extra config set KEY VALUE`."
             raise e
