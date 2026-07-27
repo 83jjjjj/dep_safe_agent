@@ -1,6 +1,8 @@
 
-import litellm
 import json
+import litellm
+from typing import Optional
+from pydantic import BaseModel
 
 BASH_TOOL_SCHEMA = {
     "type": "function",
@@ -112,7 +114,7 @@ class LitellmModel:
         self.model_name = model_name
         self.api_key = api_key
     
-    async def query(self, messages: list[dict], response_format: Optional[type[BaseModel]] = None, tools: Optional[List] = None) -> dict:
+    async def query(self, messages: list[dict], response_format: Optional[type[BaseModel]] = None, tools: Optional[list] = None) -> dict:
         # 与lm交互，获取ai_message，必须有tool_calls
         tools = tools if tools else [BASH_TOOL_SCHEMA, *CUSTOM_TOOLS_SCHEMA]
         completion_kwargs = {

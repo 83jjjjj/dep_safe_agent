@@ -33,6 +33,7 @@ dependencies = [
     "fastapi>=0.139.2",
     "orjson>=3.11.9",
     "typer>=0.27.0",
+    "tavily>=1.1.0",
 ]
 
 [project.optional-dependencies]
@@ -79,6 +80,7 @@ known-first-party = ["depsafe"]
 testpaths = ["tests"]
 pythonpath = ["src"]
 markers = [
+    "asyncio: 异步测试标记",
     "slow: 需要真实 LLM 调用的慢测试（默认跳过）",
     "eval: 评估相关的测试（需要 CVE 数据集）",
     "integration: 集成测试（需要真实 LLM + 网络）",

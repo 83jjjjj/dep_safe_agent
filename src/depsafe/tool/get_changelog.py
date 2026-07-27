@@ -2,11 +2,12 @@
 import os
 import re
 import httpx
-from typing import Optional
 from tavily import TavilyClient
 from pydantic import BaseModel, Field
+from typing import Optional, AsyncGenerator
 from packaging.version import parse as parse_version, InvalidVersion
 
+from depsafe.environment import LocalEnvironment
 from depsafe.model import LitellmModel, BASH_TOOL_SCHEMA
 
 class Changelog(BaseModel):
@@ -62,6 +63,7 @@ class ChangelogOrchestrator:
     """编排器：统一管理降级逻辑"""
     def __init__(self, model: LitellmModel):
         self.env = LocalEnvironment()
+        self.env.local_tools["web_search"] = web_search
         self.env.local_tools["get_changelog"] = self.get_changelog
         self.raw_fetcher = RawFileFetcher()
         self.llm_fallback = LLMSearchFallback(model, self.env)
@@ -96,7 +98,7 @@ class ChangelogOrchestrator:
             version_valid = False
         if owner and repo and version_valid:
             changelogs = []
-            async for rel in _list_github_releases(owner, repo):
+            async for rel in _iter_github_releases(owner, repo):
                 ver_name = rel.get("tag_name", "").lstrip("v")
                 try:
                     cur_ver = parse_version(ver_name)
@@ -108,13 +110,13 @@ class ChangelogOrchestrator:
                     break
                 changelog = rel.get("body") or "无变更日志"
                 changelogs.append({"ver_name": ver_name, "changelog": changelog})
-        if changelogs:
-            return Changelog(
-                pkg_name=pkg,
-                changelogs=changelogs,
-                from_ver=from_ver,
-                to_ver=to_ver,
-                source=f"github_repo:{repo_url}")
+            if changelogs:
+                return Changelog(
+                    pkg_name=pkg,
+                    changelogs=changelogs,
+                    from_ver=from_ver,
+                    to_ver=to_ver,
+                    source=f"github_repo:{repo_url}")
         if owner and repo:
             print(f"[降级] GitHub Releases 未找到，尝试探测 Raw 文件...")
             raw_file_changelog = await self.raw_fetcher.fetch(owner, repo, from_ver, to_ver)
@@ -172,25 +174,48 @@ class RawFileFetcher:
             max_ver = parse_version(to_ver)
         except InvalidVersion:
             return []
-        # 匹配 ## [1.2.3] 或 ### v1.2.3 等格式
-        # 这个正则捕获标题行和直到下一个标题之前的所有内容
-        heading_pattern = re.compile(r"^(#{2,4})\s*\[?v?([0-9]+\.[0-9]+\.[0-9]+[^\n]*)\]?(.*?)$(.*?)(?=(?:^#{2,4}\s*\[?v?[0-9])|\Z)", re.MULTILINE | re.DOTALL | re.IGNORECASE)
         parsed_logs = []
-        for match in heading_pattern.finditer(text):
-            version_str = match.group(2).strip()
-            try:
-                cur_ver = parse_version(version_str)
-                if min_ver < cur_ver <= max_ver:
-                    # match.group(3) 是标题行的其余部分，match.group(4) 是正文
-                    body = (match.group(3) + match.group(4)).strip()
-                    parsed_logs.append({"ver_name": version_str, "changelog": body})
-            except InvalidVersion:
-                continue       
+        current_log = []
+        current_version = None
+        # 匹配 ## [1.2.3] 或 ### v1.2.3 等格式的标题行
+        heading_pattern = re.compile(r"^(#{2,4})\s*\[?v?([^\]\s]+)\]?", re.IGNORECASE)
+        for line in text.splitlines():
+            match = heading_pattern.match(line)
+            if match:
+                # 1. 如果之前正在记录一个版本的日志，先把它保存下来
+                if current_version is not None and current_log:
+                    parsed_logs.append({
+                        "ver_name": current_version,
+                        "changelog": "\n".join(current_log).strip()
+                    })
+                # 2. 开始处理新版本
+                version_str = match.group(2).strip()
+                try:
+                    parse_version(version_str)
+                    current_version = version_str
+                    current_log = [line]
+                except InvalidVersion:
+                    current_version = None
+                    current_log = None
+            else:
+                if current_log is not None:
+                    current_log.append(line)
+        if current_version is not None and current_log:
+            parsed_logs.append({
+                "ver_name": current_version,
+                "changelog": "\n".join(current_log).strip()
+            })
         parsed_logs.sort(key=lambda x: parse_version(x["ver_name"]), reverse=True)
-        return parsed_logs
+        final_logs = []
+        for log in parsed_logs:
+            try:
+                ver = parse_version(log["ver_name"])
+                if min_ver < ver <= max_ver:
+                    final_logs.append(log)
+            except InvalidVersion:
+                continue
+        return final_logs
 
-
-tavily_client = TavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
 
 def web_search(query: str) -> str:
     """
@@ -235,6 +260,7 @@ class LLMSearchFallback:
         self.env = env
 
     async def search(self, pkg: str, from_ver: str, to_ver: str) -> "Changelog":
+        tavily_client = TavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
         task_prompt = f"""
 你是一个专业的软件供应链安全分析师。请查找 Python 包 `{pkg}` 从版本 `{from_ver}` 到 `{to_ver}` 的变更日志。
 

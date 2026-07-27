@@ -2,7 +2,6 @@
 import subprocess
 from depsafe.exceptions import Submitted
 from depsafe.tool.dep_parser import parse_deps
-from depsafe.tool.get_changelog import get_changelog, web_search
 from depsafe.tool.cve_checker import check_cve, check_github_advisory
 
 class LocalEnvironment:
@@ -11,7 +10,6 @@ class LocalEnvironment:
             "parse_deps": parse_deps,
             "check_cve": check_cve,
             "check_github_advisory": check_github_advisory,
-            "web_search": web_search
         }
 
     def execute(self, action: dict) -> dict:
