@@ -2,7 +2,7 @@
 import litellm
 import json
 
-BASH_TOOL = {
+BASH_TOOL_SCHEMA = {
     "type": "function",
     "function": {
         "name": "bash",
@@ -20,7 +20,7 @@ BASH_TOOL = {
     },
 }
 
-CUSTOM_TOOLS = [
+CUSTOM_TOOLS_SCHEMA = [
     {
         "type": "function",
         "function": {
@@ -79,20 +79,46 @@ CUSTOM_TOOLS = [
                 "required": ["pkg", "ver"]
             }
         }
-    }
-  ]
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_changelog",
+            "description": "获取指定包在两个版本之间的变更日志。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pkg": {
+                        "type": "string",
+                        "description": "依赖包名称"
+                    },
+                    "from_ver": {
+                        "type": "string",
+                        "description": "要查询变更日志的起始版本"
+                    },
+                    "to_ver": {
+                        "type": "string",
+                        "description": "要查询变更日志的目标版本"
+                    }
+                },
+                "required": ["pkg", "from_ver", "to_ver"]
+            }
+        }
+    },
+]
 
 class LitellmModel:
     def __init__(self, model_name: str, api_key: str):
         self.model_name = model_name
         self.api_key = api_key
     
-    async def query(self, messages: list[dict], response_format: Optional[type[BaseModel]] = None) -> dict:
+    async def query(self, messages: list[dict], response_format: Optional[type[BaseModel]] = None, tools: Optional[List] = None) -> dict:
         # 与lm交互，获取ai_message，必须有tool_calls
+        tools = tools if tools else [BASH_TOOL_SCHEMA, *CUSTOM_TOOLS_SCHEMA]
         completion_kwargs = {
             "model": self.model_name,
             "messages": messages,
-            "tools": [BASH_TOOL, *CUSTOM_TOOLS],
+            "tools": tools,
             "base_url": "https://api.deepseek.com",
             "api_key": self.api_key,
         }

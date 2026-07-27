@@ -3,10 +3,11 @@ import os
 import re
 import httpx
 from typing import Optional
+from tavily import TavilyClient
 from pydantic import BaseModel, Field
 from packaging.version import parse as parse_version, InvalidVersion
 
-from depsafe.model import LitellmModel
+from depsafe.model import LitellmModel, BASH_TOOL_SCHEMA
 
 class Changelog(BaseModel):
     pkg_name: str = Field(..., description="依赖包的名称")
@@ -17,21 +18,23 @@ class Changelog(BaseModel):
 
 class ChangelogOrchestrator:
     """编排器：统一管理降级逻辑"""
-    def __init__(self, llm_model: LitellmModel):
+    def __init__(self, model: LitellmModel):
+        self.env = LocalEnvironment()
+        self.env.local_tools["get_changelog"] = self.get_changelog
         self.raw_fetcher = RawFileFetcher()
-        self.llm_fallback = LLMSearchFallback(llm_model)
+        self.llm_fallback = LLMSearchFallback(model, self.env)
 
     async def get_changelog(self, pkg: str, from_ver: str, to_ver: str) -> Changelog:
         """
         获取指定包在两个版本之间的变更日志
 
         Args:
-            pkg: 
-            from_ver: 
-            to_ver:
+            pkg: 依赖包名称
+            from_ver: 要查询变更日志的起始版本
+            to_ver: 要查询变更日志的目标版本
         
         Returns:
-
+            依赖包的变更日志
         """
         # 通过pypi拿到repo链接
         pypi_url = f"https://pypi.org/pypi/{pkg}/json"
@@ -166,35 +169,125 @@ class RawFileFetcher:
         parsed_logs.sort(key=lambda x: parse_version(x["ver_name"]), reverse=True)
         return parsed_logs
 
-class LLMSearchFallback:
-    """降级：LLM 自主搜索"""
-    def __init__(self, llm_model: LitellmModel):
-        self.llm_model = llm_model
 
-    async def search(self, pkg: str, from_ver: str, to_ver: str) -> Changelog:
-        prompt = f"""
+tavily_client = TavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
+
+def web_search(query: str) -> str:
+    """
+    在互联网上搜索最新信息。
+    输入搜索关键词，返回相关的网页标题和内容摘要。
+    """
+    try:
+        response = tavily_client.search(query, max_results=3, include_raw_content=False)
+        if not response.get("results"):
+            return "未找到相关搜索结果。"
+        formatted_results = []
+        for r in response["results"]:
+            formatted_results.append(f"### {r['title']}\n来源: {r['url']}\n{r['content']}")
+        return "\n\n---\n\n".join(formatted_results)
+    except Exception as e:
+        return f"搜索执行失败: {e}"
+
+
+WEB_SEARCH_TOOL_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "web_search",
+        "description": "在互联网上搜索最新信息，用于查找包的更新日志、安全公告等。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "搜索关键词，例如 'requests python package changelog 2.31.0'"
+                }
+            },
+            "required": ["query"]
+        }
+    }
+}
+
+
+class LLMSearchFallback:
+    """降级策略：LLM 自主搜索（轻量版，带工具调用循环）"""
+    def __init__(self, model: LitellmModel, env: LocalEnvironment):
+        self.model = model
+        self.env = env
+
+    async def search(self, pkg: str, from_ver: str, to_ver: str) -> "Changelog":
+        task_prompt = f"""
 你是一个专业的软件供应链安全分析师。请查找 Python 包 `{pkg}` 从版本 `{from_ver}` 到 `{to_ver}` 的变更日志。
 
-搜索策略：
-1. 优先搜索 GitHub 仓库的 Releases 页面。
-2. 其次搜索官方文档或技术博客。
+你可以使用以下工具：
+1. `web_search`: 在互联网上搜索信息。
+2. `bash`: 执行 shell 命令。
 
-输出要求：
-1. 你必须严格按照 `Changelog` 数据模型的结构返回 JSON 数据。
-2. `pkg_name` 字段为包名。
-3. `from_ver` 和 `to_ver` 字段填入对应的版本号。
-4. `source` 字段填入 "llm_agentic_search"。
-5. `changelogs` 字段是一个列表，请尽可能找出这个区间内所有版本的变更日志。如果找不到具体版本，可以只放一个包含摘要信息的字典。
-6. 如果完全找不到任何信息，`changelogs` 列表可以为空。
+工作流程：
+1. 使用 `web_search` 搜索相关信息（建议搜索 "{pkg} github releases {to_ver}" 等）。
+2. 收集到足够信息后，**必须**调用 `bash` 工具执行以下命令来结束任务：
+   `echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT`
+   并在该命令的下一行输出你总结的最终报告内容。
+
+注意：不要直接输出文本，必须通过调用工具来交互。
 """
-        messages = [{"role": "user", "content": prompt}]
-        llm_response = await self.model.query(messages, response_format=Changelog)
-        parsed_changelog = llm_response.get("parsed")
+        messages = [
+            {"role": "system", "content": "你是一个会使用搜索工具的助手。请通过调用工具获取信息，然后给出最终总结。"},
+            {"role": "user", "content": task_prompt}
+        ]
+        max_steps = 3
+        fail_reason = None
+        for step in range(max_steps):
+            response = await self.model.query(
+                messages=messages, 
+                tools=[WEB_SEARCH_TOOL_SCHEMA, BASH_TOOL_SCHEMA]
+            )
+            actions = response.get("extra", {}).get("actions", [])
+            if not actions:
+                fail_reason = "LLM未调用任何工具。"
+                break
+            messages.append(response)
+            try:
+                results = [self.env.execute(action) for action in actions]
+                self.messages += self.model.format_toolcall_observation_results(response, results)
+            except Submitted as e:
+                final_summary = e.value["content"]
+                return await self._structure_output(final_summary, pkg, from_ver, to_ver)
+            except Exception as e:
+                tool_output = f"工具执行出错: {e}"
+        fail_reason = fail_reason if fail_reason else "LLM搜索任务达最大调用次数"
+        return Changelog(
+            pkg_name=pkg,
+            changelogs=[{"ver_name": "search_failed", "changelog": fail_reason}],
+            from_ver=from_ver,
+            to_ver=to_ver,
+            source="llm_agentic_search"
+        )
+
+    async def _structure_output(self, summary_text: str, pkg: str, from_ver: str, to_ver: str) -> Changelog:
+        """使用结构化输出，将 LLM 的文本总结转换为 Changelog 对象"""
+        struct_prompt = f"""
+请将以下变更日志总结，严格按照 Changelog 数据模型的结构转换为 JSON 格式。
+
+总结内容：
+{summary_text}
+
+要求：
+1. pkg_name: {pkg}
+2. from_ver: {from_ver}
+3. to_ver: {to_ver}
+4. source: "llm_agentic_search"
+5. changelogs: 如果总结中提到了具体的版本，请拆分成多个字典；如果没有，就放一个包含整体总结的字典。
+"""
+        response = await self.model.query(
+            messages=[{"role": "user", "content": struct_prompt}],
+            response_format=Changelog,
+        )
+        parsed_changelog = response.get("parsed")
         if isinstance(parsed_changelog, Changelog):
             return parsed_changelog
         return Changelog(
             pkg_name=pkg,
-            changelogs=[{"ver_name": "search_failed", "changelog": "LLM结构化输出changelog失败"}],
+            changelogs=[{"ver_name": "llm_summary", "changelog": summary_text}],
             from_ver=from_ver,
             to_ver=to_ver,
             source="llm_agentic_search"

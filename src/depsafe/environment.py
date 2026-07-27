@@ -2,11 +2,34 @@
 import subprocess
 from depsafe.exceptions import Submitted
 from depsafe.tool.dep_parser import parse_deps
+from depsafe.tool.get_changelog import get_changelog, web_search
 from depsafe.tool.cve_checker import check_cve, check_github_advisory
 
 class LocalEnvironment:
+    def __init__(self):
+        self.local_tools = {
+            "parse_deps": parse_deps,
+            "check_cve": check_cve,
+            "check_github_advisory": check_github_advisory,
+            "web_search": web_search
+        }
+
     def execute(self, action: dict) -> dict:
         tool_name = action["name"]
+        if tool_name in self.local_tools:
+            func = self.local_tools[tool_name]
+            try:
+                if asyncio.iscoroutinefunction(func):
+                    # 注意：这要求 execute 本身在一个事件循环中被调用
+                    result = asyncio.get_event_loop().run_until_complete(func(**action["arguments"]))
+                else:
+                    result = func(**action["arguments"])
+                return {"output": result}
+            except Exception as e:
+                return {"output": f"工具执行出错: {e}"}
+            return {
+                "output": self.local_tools[tool_name](**action["arguments"])
+            }
         if tool_name == "bash":
             command = action["arguments"]["command"]
             process = subprocess.Popen(
@@ -32,18 +55,6 @@ class LocalEnvironment:
                     }
                 )
             return output
-        elif tool_name == "parse_deps":
-            return {
-                "output": parse_deps(**action["arguments"])
-            }
-        elif tool_name == "check_cve":
-            return {
-                "output": check_cve(**action["arguments"])
-            }
-        elif tool_name == "check_github_advisory":
-            return {
-                "output": check_github_advisory(**action["arguments"])
-            }
         else:
             return {
                 "output": "Error, unknown tool call."
