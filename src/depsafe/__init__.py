@@ -2,5 +2,4 @@
 
 from pathlib import Path
 
-
 package_dir = Path(__file__).resolve().parent

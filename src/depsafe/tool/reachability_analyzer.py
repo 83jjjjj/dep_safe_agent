@@ -1,52 +1,31 @@
-
-
-import os
 import ast
+import os
+
 from pydantic import BaseModel, Field
-from typing import List, Dict, Optional, Set, Tuple
 
 from depsafe.environment import LocalEnvironment
 
+
 class CallEvidence(BaseModel):
     """记录一次函数调用的证据"""
+
     file: str = Field(..., description="文件路径")
     line: int = Field(..., description="行号")
     code: str = Field(..., description="代码片段")
     confidence: str = Field(..., description="置信度")
     resolved_path: str = Field(..., description="解析路径")
 
+
 class ReachabilityAnalyzer:
     """
     基于 AST 和符号表追踪的漏洞可达性分析器
     """
+
     def __init__(self):
         self.env = LocalEnvironment()
         self.env.local_tools["analyze_reachability"] = self.analyze_reachability
 
-    ANALYZE_REACHABILITY_SCHEMA = {
-        "type": "function",
-        "function": {
-            "name": "analyze_reachability",
-            "description": "分析代码文件中对特定危险函数的调用情况，用于安全审计。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "file_path": {
-                        "type": "string",
-                        "description": "需要分析的代码文件的路径，例如 'app.py'"
-                    },
-                    "target_functions": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "需要追踪的目标函数列表，例如 ['requests.get', 'os.system']"
-                    }
-                },
-                "required": ["file_path", "target_functions"]
-            }
-        }
-    }
-
-    def analyze_reachability(self, file_path: str, target_functions: List[str]) -> List[dict]:
+    def analyze_reachability(self, file_path: str, target_functions: list[str]) -> list[dict]:
         """
         分析指定代码文件中，对目标函数的调用可达性。
         这是一个静态代码分析工具，用于发现潜在的安全风险。
@@ -61,14 +40,14 @@ class ReachabilityAnalyzer:
         evidences = self.analyze_file(file_path, set(target_functions))
         return [e.model_dump() for e in evidences]
 
-    def analyze_file(self, file_path: str, target_functions: Optional[Set[str]] = None) -> List[CallEvidence]:
+    def analyze_file(self, file_path: str, target_functions: set[str] | None = None) -> list[CallEvidence]:
         """
         分析单个文件的可达性
         """
         if not os.path.exists(file_path):
             return []
         try:
-            with open(file_path, "r", encoding="utf-8") as f:
+            with open(file_path, encoding="utf-8") as f:
                 source = f.read()
             tree = ast.parse(source)
         except Exception as e:
@@ -76,7 +55,7 @@ class ReachabilityAnalyzer:
             return []
         # 第一遍扫描：构建符号表 (处理 Import 和 Assign)
         # 结构: { "别名": "真实路径", "func": "requests.get" }
-        symbol_table: Dict[str, str] = {}
+        symbol_table: dict[str, str] = {}
         # 预置一些常见的根模块，防止相对导入解析错误
         # 这里简化处理，假设所有未限定的导入都可能是目标模块
         for target in target_functions:
@@ -87,7 +66,7 @@ class ReachabilityAnalyzer:
         evidences = self._scan_calls(target_functions, tree, symbol_table, file_path, source.splitlines())
         return evidences
 
-    def _build_symbol_table(self, tree: ast.AST, symbol_table: Dict[str, str]):
+    def _build_symbol_table(self, tree: ast.AST, symbol_table: dict[str, str]):
         """
         第一遍扫描：提取 Import 和 变量赋值信息
         """
@@ -114,7 +93,14 @@ class ReachabilityAnalyzer:
                             if isinstance(target, ast.Name):
                                 symbol_table[target.id] = value_path
 
-    def _scan_calls(self, target_functions: Set[str], tree: ast.AST, symbol_table: Dict[str, str], file_path: str, lines: List[str]) -> List[CallEvidence]:
+    def _scan_calls(
+        self,
+        target_functions: set[str],
+        tree: ast.AST,
+        symbol_table: dict[str, str],
+        file_path: str,
+        lines: list[str],
+    ) -> list[CallEvidence]:
         """
         第二遍扫描：查找 Call 节点并验证
         """
@@ -131,16 +117,18 @@ class ReachabilityAnalyzer:
                         confidence = "high"
                     is_target = any(resolved.startswith(t) for t in target_functions)
                     if is_target or confidence == "low":
-                        evidences.append(CallEvidence(
-                            file=file_path,
-                            line=node.lineno,
-                            code=code_snippet,
-                            confidence=confidence,
-                            resolved_path=resolved
-                        ))
+                        evidences.append(
+                            CallEvidence(
+                                file=file_path,
+                                line=node.lineno,
+                                code=code_snippet,
+                                confidence=confidence,
+                                resolved_path=resolved,
+                            )
+                        )
         return evidences
-    
-    def _resolve_call_path(self, node: ast.Call, symbol_table: Dict[str, str]) -> Optional[str]:
+
+    def _resolve_call_path(self, node: ast.Call, symbol_table: dict[str, str]) -> str | None:
         """
         尝试解析一个 Call 节点的真实路径
         """
@@ -160,7 +148,7 @@ class ReachabilityAnalyzer:
                 return self._handle_getattr(node.func, symbol_table)
         return None
 
-    def _handle_getattr(self, node: ast.Call, symbol_table: Dict[str, str]) -> Optional[str]:
+    def _handle_getattr(self, node: ast.Call, symbol_table: dict[str, str]) -> str | None:
         """
         处理 getattr 调用
         """
@@ -182,7 +170,7 @@ class ReachabilityAnalyzer:
         # L3: getattr(obj, variable) - 无法静态确定
         return f"{obj_path}.<dynamic>"
 
-    def _get_full_name(self, node: ast.AST, symbol_table: Optional[Dict[str, str]] = None) -> Optional[str]:
+    def _get_full_name(self, node: ast.AST, symbol_table: dict[str, str] | None = None) -> str | None:
         """
         递归获取属性访问的完整字符串路径 (e.g., a.b.c)
         如果提供了 symbol_table，会尝试解析变量别名

@@ -1,8 +1,6 @@
+from unittest.mock import MagicMock, patch
 
-
-from unittest.mock import patch, MagicMock
-from depsafe.tool.cve_checker import check_cve
-from depsafe.tool.cve_checker import check_github_advisory
+from depsafe.tool.cve_checker import check_cve, check_github_advisory
 
 
 class TestCheckCve:
@@ -19,12 +17,14 @@ class TestCheckCve:
                             "ranges": [
                                 {
                                     "type": "ECOSYSTEM",
-                                    "events": [{"introduced": "0"}, {"fixed": "2.31.0"}]
+                                    "events": [{"introduced": "0"}, {"fixed": "2.31.0"}],
                                 }
                             ]
                         }
                     ],
-                    "severity": [{"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:C/C:H/I:N/A:N"}]
+                    "severity": [
+                        {"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:C/C:H/I:N/A:N"}
+                    ],
                 }
             ]
         }
@@ -47,9 +47,7 @@ class TestCheckCve:
                     "aliases": ["CVE-2024-99999"],
                     "summary": "Test fallback severity",
                     "affected": [],
-                    "database_specific": {
-                        "severity": "MODERATE"
-                    }
+                    "database_specific": {"severity": "MODERATE"},
                 }
             ]
         }
@@ -72,6 +70,7 @@ class TestCheckCve:
             results = check_cve("flask", "2.3.1")
         assert results == []
 
+
 class TestGitHubAdvisory:
     def test_no_token_returns_empty(self, monkeypatch):
         monkeypatch.delenv("GITHUB_TOKEN", raising=False)
@@ -84,18 +83,18 @@ class TestGitHubAdvisory:
         mock_resp.json.return_value = {
             "data": {
                 "securityVulnerabilities": {
-                    "nodes": [{
-                        "vulnerableVersionRange": ">= 2.3.0, < 2.3.3",
-                        "firstPatchedVersion": {"identifier": "2.3.3"},
-                        "advisory": {
-                            "ghsaId": "GHSA-xxxx-xxxx-xxxx",
-                            "summary": "Flask session leak",
-                            "severity": "HIGH",
-                            "identifiers": [
-                                {"type": "CVE", "value": "CVE-2023-30861"}
-                            ]
+                    "nodes": [
+                        {
+                            "vulnerableVersionRange": ">= 2.3.0, < 2.3.3",
+                            "firstPatchedVersion": {"identifier": "2.3.3"},
+                            "advisory": {
+                                "ghsaId": "GHSA-xxxx-xxxx-xxxx",
+                                "summary": "Flask session leak",
+                                "severity": "HIGH",
+                                "identifiers": [{"type": "CVE", "value": "CVE-2023-30861"}],
+                            },
                         }
-                    }]
+                    ]
                 }
             }
         }
@@ -113,16 +112,18 @@ class TestGitHubAdvisory:
         mock_resp.json.return_value = {
             "data": {
                 "securityVulnerabilities": {
-                    "nodes": [{
-                        "vulnerableVersionRange": "< 2.0",  # 只影响 2.0 以下
-                        "firstPatchedVersion": {"identifier": "2.0.0"},
-                        "advisory": {
-                            "ghsaId": "GHSA-yyyy",
-                            "summary": "Old issue",
-                            "severity": "LOW",
-                            "identifiers": []
+                    "nodes": [
+                        {
+                            "vulnerableVersionRange": "< 2.0",  # 只影响 2.0 以下
+                            "firstPatchedVersion": {"identifier": "2.0.0"},
+                            "advisory": {
+                                "ghsaId": "GHSA-yyyy",
+                                "summary": "Old issue",
+                                "severity": "LOW",
+                                "identifiers": [],
+                            },
                         }
-                    }]
+                    ]
                 }
             }
         }

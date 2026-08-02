@@ -1,18 +1,21 @@
-
 import os
-import yaml
 import platform
 from pathlib import Path
+
+import yaml
 from jinja2 import StrictUndefined, Template
 
 from depsafe import package_dir
-from depsafe.model import LitellmModel
-from depsafe.exceptions import Submitted
 from depsafe.environment import LocalEnvironment
+from depsafe.exceptions import Submitted
+from depsafe.model import LitellmModel
+
 
 class DepSafeAgent:
     def __init__(self):
-        self.config = yaml.safe_load(Path(package_dir / "config" / "default.yaml").read_text(encoding='utf-8'))["agent"]
+        self.config = yaml.safe_load(
+            Path(package_dir / "config" / "default.yaml").read_text(encoding="utf-8")
+        )["agent"]
         self.model = LitellmModel("deepseek/deepseek-v4-flash", os.getenv("DEEPSEEK_API_KEY"))
         self.messages = []
         self.env = LocalEnvironment()
@@ -20,8 +23,22 @@ class DepSafeAgent:
     def run(self, task: str):
         self.config["task"] = task
         self.config.update(platform.uname()._asdict())
-        self.messages.append({"role": "system", "content": Template(self.config["system_template"], undefined=StrictUndefined).render(**self.config)})
-        self.messages.append({"role": "user", "content": Template(self.config["instance_template"], undefined=StrictUndefined).render(**self.config)})
+        self.messages.append(
+            {
+                "role": "system",
+                "content": Template(
+                    self.config["system_template"], undefined=StrictUndefined
+                ).render(**self.config),
+            }
+        )
+        self.messages.append(
+            {
+                "role": "user",
+                "content": Template(
+                    self.config["instance_template"], undefined=StrictUndefined
+                ).render(**self.config),
+            }
+        )
         while True:
             try:
                 self.step()
@@ -29,11 +46,11 @@ class DepSafeAgent:
                 self.messages.append(e.message)
             if self.messages[-1]["role"] == "exit":
                 break
-    
+
     def step(self):
         ai_message = self.query()
         self.execute(ai_message)
-    
+
     def query(self) -> dict:
         ai_message = self.model.query(self.messages)
         self.messages.append(ai_message)

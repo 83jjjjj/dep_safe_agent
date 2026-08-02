@@ -1,26 +1,25 @@
-
 from dotenv import load_dotenv
 
 load_dotenv()
 
 import os
+
 import httpx
-from typing import List, Optional
-from packaging.version import Version
 from packaging.specifiers import SpecifierSet
-from pydantic import BaseModel, Field, ValidationError, ConfigDict
+from packaging.version import Version
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 
 class Vulnerability(BaseModel):
-    model_config = ConfigDict(frozen=True) # 开启基于字段值的去重和哈希
+    model_config = ConfigDict(frozen=True)  # 开启基于字段值的去重和哈希
     pkg_name: str = Field(..., description="依赖包的名称")
     cve_id: str = Field(..., description="漏洞的 CVE 编号")
-    severity: Optional[str] = Field(None, description="严重程度")
-    fixed_ver: Optional[str] = Field(None, description="修复该漏洞的版本")
+    severity: str | None = Field(None, description="严重程度")
+    fixed_ver: str | None = Field(None, description="修复该漏洞的版本")
     desc: str = Field("", description="漏洞描述")
 
 
-def check_cve(pkg: str, ver: str) -> List[Vulnerability]:
+def check_cve(pkg: str, ver: str) -> list[Vulnerability]:
     """
     查询指定包和版本的已知漏洞，使用OSV API
 
@@ -30,16 +29,10 @@ def check_cve(pkg: str, ver: str) -> List[Vulnerability]:
 
     Returns:
         包含漏洞信息的 Vulnerability 对象列表。如果该版本没有已知漏洞，
-        或者 API 请求失败，则返回空列表。    
+        或者 API 请求失败，则返回空列表。
     """
     url = "https://api.osv.dev/v1/query"
-    payload = {
-        "package": {
-            "name": pkg,
-            "ecosystem": "PyPI"
-        },
-        "version": ver
-    }
+    payload = {"package": {"name": pkg, "ecosystem": "PyPI"}, "version": ver}
     try:
         response = httpx.post(url, json=payload, timeout=10.0)
         response.raise_for_status()
@@ -49,7 +42,9 @@ def check_cve(pkg: str, ver: str) -> List[Vulnerability]:
         return []
     vulnerabilities = []
     for vuln in data.get("vulns", []):
-        cve_id = next((alias for alias in vuln.get("aliases", []) if alias.startswith("CVE-")), vuln.get("id"))
+        cve_id = next(
+            (alias for alias in vuln.get("aliases", []) if alias.startswith("CVE-")), vuln.get("id")
+        )
         severity = None
         if "severity" in vuln and isinstance(vuln["severity"], list):
             for s in vuln["severity"]:
@@ -69,18 +64,17 @@ def check_cve(pkg: str, ver: str) -> List[Vulnerability]:
                             break
         desc = vuln.get("summary", "") or vuln.get("details", "")
         try:
-            vulnerabilities.append(Vulnerability(
-                pkg_name=pkg,
-                cve_id=cve_id,
-                severity=severity,
-                fixed_ver=fixed_ver,
-                desc=desc
-            ))
+            vulnerabilities.append(
+                Vulnerability(
+                    pkg_name=pkg, cve_id=cve_id, severity=severity, fixed_ver=fixed_ver, desc=desc
+                )
+            )
         except ValidationError as e:
             print(f"数据模型校验失败: {e}")
     return list(set(vulnerabilities))
 
-def check_github_advisory(pkg: str, ver: str) -> List[Vulnerability]:
+
+def check_github_advisory(pkg: str, ver: str) -> list[Vulnerability]:
     """
     查询 GitHub Advisory Database 获取漏洞信息 (作为 OSV 的 Fallback)
 
@@ -90,7 +84,7 @@ def check_github_advisory(pkg: str, ver: str) -> List[Vulnerability]:
 
     Returns:
         包含漏洞信息的 Vulnerability 对象列表。如果该版本没有已知漏洞，
-        或者 API 请求失败，则返回空列表。    
+        或者 API 请求失败，则返回空列表。
     """
     token = os.getenv("GITHUB_TOKEN")
     if not token:
@@ -117,7 +111,9 @@ def check_github_advisory(pkg: str, ver: str) -> List[Vulnerability]:
     """
     variables = {"pkg": pkg}
     try:
-        response = httpx.post(url, json={"query": query, "variables": variables}, headers=headers, timeout=10.0)
+        response = httpx.post(
+            url, json={"query": query, "variables": variables}, headers=headers, timeout=10.0
+        )
         response.raise_for_status()
         data = response.json()
     except Exception as e:
@@ -137,20 +133,25 @@ def check_github_advisory(pkg: str, ver: str) -> List[Vulnerability]:
             except Exception:
                 pass
         advisory = node.get("advisory", {})
-        cve_id = next((i["value"] for i in advisory.get("identifiers", []) if i["type"] == "CVE"), None)
+        cve_id = next(
+            (i["value"] for i in advisory.get("identifiers", []) if i["type"] == "CVE"), None
+        )
         patched = node.get("firstPatchedVersion")
         fixed_ver = patched.get("identifier") if patched else None
         try:
-            vulnerabilities.append(Vulnerability(
-                pkg_name=pkg,
-                cve_id=cve_id,
-                severity=advisory.get("severity"),
-                fixed_ver=fixed_ver,
-                desc=advisory.get("summary", "")
-            ))
+            vulnerabilities.append(
+                Vulnerability(
+                    pkg_name=pkg,
+                    cve_id=cve_id,
+                    severity=advisory.get("severity"),
+                    fixed_ver=fixed_ver,
+                    desc=advisory.get("summary", ""),
+                )
+            )
         except ValidationError as e:
             print(f"GitHub 数据模型校验失败: {e}")
     return vulnerabilities
+
 
 if __name__ == "__main__":
     results = check_github_advisory("requests", "2.25.1")

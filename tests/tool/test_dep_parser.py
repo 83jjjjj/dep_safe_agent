@@ -1,9 +1,13 @@
-
 import pytest
+
 from depsafe.tool.dep_parser import (
-    _parse_poetry_lock, _parse_uv_lock, _parse_pipfile_lock, 
-    parse_deps, Dependency
+    Dependency,
+    _parse_pipfile_lock,
+    _parse_poetry_lock,
+    _parse_uv_lock,
+    parse_deps,
 )
+
 
 class TestLockFileParsing:
     # 锁文件解析
@@ -25,7 +29,7 @@ category = "dev"
         assert len(deps) == 1
         assert deps[0].name == "flask"
         assert deps[0].version_spec == "==2.3.1"
-    
+
     def test_parse_uv_lock(self, tmp_path):
         lock = tmp_path / "uv.lock"
         lock.write_text("""
@@ -46,7 +50,7 @@ version = "1.26.18"
 
     def test_parse_pipfile_lock(self, tmp_path):
         lock = tmp_path / "Pipfile.lock"
-        lock.write_text('''
+        lock.write_text("""
 {
     "default": {
         "flask": {
@@ -58,7 +62,7 @@ version = "1.26.18"
         "pytest": {"version": "==8.0.0"}
     }
 }
-''')
+""")
         deps = _parse_pipfile_lock(lock)
         assert len(deps) == 1
         assert deps[0].name == "flask"
@@ -71,13 +75,22 @@ class TestPipelineCompile:
     def test_parse_compiled_output(self, tmp_path, monkeypatch):
         # 集成测试，parse_deps流程跑通
         mock_deps = [
-            Dependency(name="flask", version_spec="==2.3.3", marker=None, source_file="requirements.txt", category="production"),
-            Dependency(name="requests", version_spec="==2.31.0", marker="python_version >= '3.8'", source_file="requirements.txt", category="production")
+            Dependency(
+                name="flask",
+                version_spec="==2.3.3",
+                marker=None,
+                source_file="requirements.txt",
+                category="production",
+            ),
+            Dependency(
+                name="requests",
+                version_spec="==2.31.0",
+                marker="python_version >= '3.8'",
+                source_file="requirements.txt",
+                category="production",
+            ),
         ]
-        monkeypatch.setattr(
-            "depsafe.tool.dep_parser._compile_dependencies",
-            lambda fp: mock_deps
-        )
+        monkeypatch.setattr("depsafe.tool.dep_parser._compile_dependencies", lambda fp: mock_deps)
         req = tmp_path / "requirements.txt"
         req.write_text("flask>=2.3.0\nrequests>=2.25.0\n")
         deps = parse_deps(str(req))
@@ -86,6 +99,7 @@ class TestPipelineCompile:
     def test_extracts_pinned_versions(self, tmp_path):
         """_parse_compiled_output：从 pip-compile 输出文件中正确提取版本号"""
         from depsafe.tool.dep_parser import _parse_compiled_output
+
         compiled = tmp_path / "compiled.txt"
         compiled.write_text("""
 flask==2.3.3
@@ -111,7 +125,15 @@ class TestParseDepsEndToEnd:
         req.write_text("flask\n")
         monkeypatch.setattr(
             "depsafe.tool.dep_parser._parse_poetry_lock",
-            lambda p: [Dependency(name="flask", version_spec="==2.3.1", marker=None, source_file="poetry.lock", category="production")]
+            lambda p: [
+                Dependency(
+                    name="flask",
+                    version_spec="==2.3.1",
+                    marker=None,
+                    source_file="poetry.lock",
+                    category="production",
+                )
+            ],
         )
         deps = parse_deps(str(req))
         assert deps[0].source_file == "poetry.lock"
