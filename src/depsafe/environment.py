@@ -1,8 +1,12 @@
-
+import asyncio
+import inspect
 import subprocess
+
 from depsafe.exceptions import Submitted
-from depsafe.tool.dep_parser import parse_deps
+from depsafe.tool.assess_priority import assess_priority
 from depsafe.tool.cve_checker import check_cve, check_github_advisory
+from depsafe.tool.dep_parser import parse_deps
+
 
 class LocalEnvironment:
     def __init__(self):
@@ -10,6 +14,7 @@ class LocalEnvironment:
             "parse_deps": parse_deps,
             "check_cve": check_cve,
             "check_github_advisory": check_github_advisory,
+            "assess_priority": assess_priority,
         }
 
     def execute(self, action: dict) -> dict:
@@ -17,34 +22,40 @@ class LocalEnvironment:
         if tool_name in self.local_tools:
             func = self.local_tools[tool_name]
             try:
-                if asyncio.iscoroutinefunction(func):
+                if inspect.iscoroutinefunction(func):
                     # 注意：这要求 execute 本身在一个事件循环中被调用
-                    result = asyncio.get_event_loop().run_until_complete(func(**action["arguments"]))
+                    result = asyncio.get_event_loop().run_until_complete(
+                        func(**action["arguments"])
+                    )
                 else:
                     result = func(**action["arguments"])
                 return {"output": result}
             except Exception as e:
                 return {"output": f"工具执行出错: {e}"}
-            return {
-                "output": self.local_tools[tool_name](**action["arguments"])
-            }
         if tool_name == "bash":
             command = action["arguments"]["command"]
             process = subprocess.Popen(
-                command, 
-                stdout=subprocess.PIPE, 
-                stderr=subprocess.STDOUT, 
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
                 shell=True,
                 text=True,
-                encoding="utf-8")
+                encoding="utf-8",
+            )
             stdout, _ = process.communicate()
-            completed_process = subprocess.CompletedProcess(command, process.returncode, stdout=stdout)
+            completed_process = subprocess.CompletedProcess(
+                command, process.returncode, stdout=stdout
+            )
             output = {
                 "output": completed_process.stdout,
-                "returncode": completed_process.returncode
+                "returncode": completed_process.returncode,
             }
             lines = output["output"].lstrip().splitlines(keepends=True)
-            if lines and lines[0].strip() == "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT" and output["returncode"] == 0:
+            if (
+                lines
+                and lines[0].strip() == "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT"
+                and output["returncode"] == 0
+            ):
                 submission = "".join(lines[1:])
                 raise Submitted(
                     {
@@ -54,6 +65,4 @@ class LocalEnvironment:
                 )
             return output
         else:
-            return {
-                "output": "Error, unknown tool call."
-            }
+            return {"output": "Error, unknown tool call."}
