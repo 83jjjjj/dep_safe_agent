@@ -33,8 +33,8 @@ def _parse_cvss_severity(cvss_vector: str) -> str:
     """
     metrics = {}
     for part in cvss_vector.split("/"):
-        if "=" in part:
-            key, value = part.split("=", 1)
+        if ":" in part:
+            key, value = part.split(":", 1)
             metrics[key] = value
     c = metrics.get("C", "N")  # Confidentiality
     i = metrics.get("I", "N")  # Integrity
