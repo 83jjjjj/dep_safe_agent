@@ -1,5 +1,4 @@
-import pytest
-from depsafe.tool.assess_priority import assess_priority, PriorityInput, PriorityResult, _parse_cvss_severity
+from depsafe.tool.assess_priority import PriorityInput, _parse_cvss_severity, assess_priority
 
 
 class TestCvssParsing:
