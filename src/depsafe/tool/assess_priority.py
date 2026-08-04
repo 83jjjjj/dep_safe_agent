@@ -21,7 +21,7 @@ class PriorityResult(BaseModel):
     priority: str = Field(
         ..., description="最终优先级：P0(紧急) / P1(高) / P2(中) / P3(低) / P4(建议)"
     )
-    severity: str = Field(..., description="标准化后的危害等级：CRITICAL / HIGH / MODERATE / LOW")
+    severity: str = Field(..., description="标准化后的漏洞危害等级：CRITICAL / HIGH / MODERATE / LOW")
     reason: str = Field(..., description="优先级判定理由，便于追溯和审计")
 
 
