@@ -2,7 +2,8 @@ import os
 
 import requests
 from pydantic import BaseModel, Field
-from utils.github import get_repo_info
+
+from depsafe.tool.utils.github import get_repo_info
 
 CREATE_GITHUB_ISSUE_SCHEMA = {
     "type": "function",
