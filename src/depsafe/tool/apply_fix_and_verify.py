@@ -1,9 +1,9 @@
 import re
 import subprocess
 import sys
-import tomlkit
 from pathlib import Path
 
+import tomlkit
 from pydantic import BaseModel, Field
 
 
@@ -13,12 +13,15 @@ class FixAttemptResult(BaseModel):
     success: bool = Field(..., description="是否修复成功")
     attempted_version: str = Field(..., description="尝试升级的目标版本")
     failure_reason: str | None = Field(
-        None, description="失败原因分类: DEPENDENCY_CONFLICT / TEST_FAILURE / UNSUPPORTED_FORMAT / ENV_MISSING / LOCK_FAILED"
+        None,
+        description="失败原因分类: DEPENDENCY_CONFLICT / TEST_FAILURE / TEST_TIMEOUT / UNSUPPORTED_FORMAT / ENV_MISSING / LOCK_FAILED",
     )
     raw_error: str | None = Field(None, description="原始错误日志（供LLM深度分析）")
     branch_name: str | None = Field(None, description="创建的修复分支名（仅当修改文件成功时返回）")
-    lockfile_skipped: bool = Field(False, description="是否跳过了锁文件生成（因缺少工具）")
     test_skipped: bool = Field(False, description="是否跳过了测试执行（因无测试套件）")
+    suggested_next_action: str | None = Field(
+        None, description="建议的下一步操作: TRY_NEXT_VERSION / CREATE_REPORT_AND_ISSUE / MANUAL_REVIEW"
+    )
 
 
 def _has_tool(tool_name: str) -> bool:
@@ -85,6 +88,7 @@ def _update_requirements(pkg_name: str, version: str) -> bool:
 
 
 def _update_pipfile(pkg_name: str, version: str) -> bool:
+    """更新 Pipfile 中的依赖版本"""
     path = Path("Pipfile")
     if not path.exists():
         return False
@@ -105,6 +109,7 @@ def _regenerate_lockfile() -> tuple[bool, str]:
     """
     尝试生成锁文件，返回 (是否成功, 错误信息)
     按优先级尝试: uv -> poetry -> pip-tools -> pipenv
+    锁文件生成失败意味着依赖树不合法，必须阻断流程。
     """
     lockfile_tools = [
         ("uv", ["uv", "lock"], ["pyproject.toml", "requirements.txt"]),
@@ -121,14 +126,13 @@ def _regenerate_lockfile() -> tuple[bool, str]:
                 return False, f"{tool_name} lock failed: {e.stderr}"
     return False, "No lockfile tool available (uv/poetry/pip-compile/pipenv)"
 
+
 def _has_tests() -> bool:
     """检测项目是否有测试套件"""
-    # 检查 pytest 风格
     if Path("tests").exists() or Path("test").exists():
         return True
     if Path("conftest.py").exists():
         return True
-    # 检查 unittest 风格
     for pattern in ["test_*.py", "*_test.py"]:
         if list(Path(".").glob(pattern)):
             return True
@@ -146,7 +150,7 @@ def _run_tests() -> tuple[bool, str]:
                 ["pytest", "--tb=short", "-q"],
                 capture_output=True,
                 text=True,
-                timeout=300,  # 5分钟超时
+                timeout=300,
             )
             return result.returncode == 0, result.stdout + result.stderr
         except subprocess.TimeoutExpired:
@@ -156,7 +160,10 @@ def _run_tests() -> tuple[bool, str]:
     if _has_tool("python"):
         try:
             result = subprocess.run(
-                [sys.executable, "-m", "unittest", "discover", "-v"], capture_output=True, text=True, timeout=300
+                [sys.executable, "-m", "unittest", "discover", "-v"],
+                capture_output=True,
+                text=True,
+                timeout=300,
             )
             return result.returncode == 0, result.stdout + result.stderr
         except Exception as e:
@@ -174,7 +181,7 @@ def apply_fix_and_verify(pkg_name: str, cve_id: str, target_version: str) -> Fix
         target_version: 目标修复版本，如 '2.3.1'
 
     Returns:
-        FixAttemptResult: 包含成功/失败状态及详细原因
+        FixAttemptResult: 包含成功/失败状态、详细原因及建议的下一步操作
     """
     # 1. 环境自检：git 是必须的
     if not _has_tool("git"):
@@ -183,6 +190,7 @@ def apply_fix_and_verify(pkg_name: str, cve_id: str, target_version: str) -> Fix
             attempted_version=target_version,
             failure_reason="ENV_MISSING",
             raw_error="git is not installed in sandbox",
+            suggested_next_action="CREATE_REPORT_AND_ISSUE",
         )
     # 2. 创建修复分支
     try:
@@ -193,8 +201,9 @@ def apply_fix_and_verify(pkg_name: str, cve_id: str, target_version: str) -> Fix
             attempted_version=target_version,
             failure_reason="ENV_MISSING",
             raw_error=f"Failed to create branch: {e.stderr.decode()}",
+            suggested_next_action="CREATE_REPORT_AND_ISSUE",
         )
-    # 3. 更新依赖文件（智能适配三种格式）
+    # 3. 更新依赖文件
     updated = False
     if Path("pyproject.toml").exists():
         updated = _update_pyproject(pkg_name, target_version)
@@ -209,48 +218,57 @@ def apply_fix_and_verify(pkg_name: str, cve_id: str, target_version: str) -> Fix
             failure_reason="UNSUPPORTED_FORMAT",
             raw_error="No supported dependency file found (pyproject.toml/requirements.txt/Pipfile)",
             branch_name=branch_name,
+            suggested_next_action="CREATE_REPORT_AND_ISSUE",
         )
-    # 4. 生成锁文件（尽力而为）
-    lockfile_skipped = False
+    # 4. 生成锁文件（必须成功，失败则阻断流程）
     lock_success, lock_error = _regenerate_lockfile()
     if not lock_success:
-        # 锁文件生成失败不阻断流程，仅标记跳过
-        lockfile_skipped = True
+        return FixAttemptResult(
+            success=False,
+            attempted_version=target_version,
+            failure_reason="LOCK_FAILED",
+            raw_error=lock_error,
+            branch_name=branch_name,
+            suggested_next_action="TRY_NEXT_VERSION",
+        )
     # 5. 运行测试（尽力而为）
-    test_skipped = False
     if not _has_tests():
-        test_skipped = True
-        # 无测试套件视为成功（建议人工验证）
         return FixAttemptResult(
             success=True,
             attempted_version=target_version,
             branch_name=branch_name,
-            lockfile_skipped=lockfile_skipped,
             test_skipped=True,
+            suggested_next_action=None,
         )
-    # 有测试套件，执行测试
     test_passed, test_output = _run_tests()
     if test_passed:
         return FixAttemptResult(
             success=True,
             attempted_version=target_version,
             branch_name=branch_name,
-            lockfile_skipped=lockfile_skipped,
             test_skipped=False,
+            suggested_next_action=None,
         )
     else:
-        # 分析失败原因
         failure_reason = "TEST_FAILURE"
         if "ImportError" in test_output or "ModuleNotFoundError" in test_output:
             failure_reason = "DEPENDENCY_CONFLICT"
         elif "ResolutionImpossible" in test_output or "Could not find a version" in test_output:
             failure_reason = "DEPENDENCY_CONFLICT"
+        elif "timed out" in test_output.lower():
+            failure_reason = "TEST_TIMEOUT"
+        if failure_reason == "DEPENDENCY_CONFLICT":
+            suggested_next_action = "TRY_NEXT_VERSION"
+        elif failure_reason == "TEST_FAILURE":
+            suggested_next_action = "MANUAL_REVIEW"
+        else:
+            suggested_next_action = "TRY_NEXT_VERSION"
         return FixAttemptResult(
             success=False,
             attempted_version=target_version,
             failure_reason=failure_reason,
             raw_error=test_output,
             branch_name=branch_name,
-            lockfile_skipped=lockfile_skipped,
             test_skipped=False,
+            suggested_next_action=suggested_next_action,
         )
