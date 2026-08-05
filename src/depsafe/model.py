@@ -1,6 +1,9 @@
 import json
 
 import litellm
+from dep_safe_agent.src.depsafe.budget import TokenBudget
+from dep_safe_agent.src.depsafe.exceptions import FormatError
+from jinja2 import StrictUndefined, Template
 from pydantic import BaseModel
 
 BASH_TOOL_SCHEMA = {
@@ -162,6 +165,7 @@ class LitellmModel:
         messages: list[dict],
         response_format: type[BaseModel] | None = None,
         tools: list | None = None,
+        token_budget: TokenBudget | None = None,
     ) -> dict:
         # 与lm交互，获取ai_message，必须有tool_calls
         tools = tools if tools else [BASH_TOOL_SCHEMA, *CUSTOM_TOOLS_SCHEMA]
@@ -179,25 +183,61 @@ class LitellmModel:
         except litellm.exceptions.AuthenticationError as e:
             e.message += " You can permanently set your API key with `depsafe-extra config set KEY VALUE`."
             raise e
-        # 获取tool_calls转化为合法格式，纳入extra部分
-        # 自定义工具调用 + bash降级
-        tool_calls = response.choices[0].message.tool_calls
-        actions = []
-        if tool_calls:
-            for tool_call in tool_calls:
-                args = json.loads(tool_call.function.arguments)
-                actions.append(
-                    {
-                        "name": tool_call.function.name,
-                        "arguments": args,
-                        "tool_call_id": tool_call.id,
-                    }
-                )
+        if token_budget and hasattr(response, "usage"):
+            token_budget.record(response.usage.prompt_tokens, response.usage.completion_tokens)
+        try:
+            actions = self._parse_actions(response)
+        except FormatError as e:
+            try:
+                e.messages[0]["extra"]["response"] = response.model_dump(mode="json")
+            except Exception:
+                e.messages[0]["extra"]["response"] = repr(response)
+            raise
         message = response.choices[0].message.model_dump()
         message["extra"] = {"actions": actions}
         return message
 
-    def format_toolcall_observation_results(self, message: dict, outputs: list[dict]) -> list[dict]:
+    def _parse_actions(self, response) -> list[dict]:
+        """获取tool_calls转化为合法格式"""
+        tool_calls = response.choices[0].message.tool_calls
+        if not tool_calls:
+            raise FormatError(
+                {
+                    "role": "user",
+                    "content": Template("{{ error }}", undefined=StrictUndefined).render(
+                        error="No tool calls found in the response. Every response MUST include at least one tool call.",
+                        actions=[],
+                        has_tool_calls=False,
+                    ),
+                    "extra": {"interrupt_type": "FormatError"},
+                }
+            )
+        actions = []
+        for tool_call in tool_calls:
+            try:
+                args = json.loads(tool_call.function.arguments)
+            except Exception as e:
+                raise FormatError(
+                    {
+                        "role": "user",
+                        "content": Template("{{ error }}", undefined=StrictUndefined).render(
+                            error=f"Error parsing tool call arguments: {e}.",
+                            actions=[],
+                            has_tool_calls=False,
+                        ),
+                        "extra": {"interrupt_type": "FormatError"},
+                    }
+                )
+            actions.append(
+                {
+                    "name": tool_call.function.name,
+                    "arguments": args,
+                    "tool_call_id": tool_call.id,
+                }
+            )
+        return actions
+
+    def _format_toolcall_observation_results(self, message: dict, outputs: list[dict]) -> list[dict]:
         # 将工具结果outputs转化为合法格式
         actions = message["extra"]["actions"]
         tool_messages = []
