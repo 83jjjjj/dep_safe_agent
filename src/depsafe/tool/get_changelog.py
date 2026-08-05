@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from tavily import TavilyClient
 
 from depsafe.environment import LocalEnvironment
+from depsafe.exceptions import Submitted
 from depsafe.model import BASH_TOOL_SCHEMA, LitellmModel
 
 
