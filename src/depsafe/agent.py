@@ -1,8 +1,8 @@
 import logging
 import os
 import platform
-from pathlib import Path
 import traceback
+from pathlib import Path
 
 import yaml
 from jinja2 import StrictUndefined, Template
@@ -10,7 +10,7 @@ from jinja2 import StrictUndefined, Template
 from depsafe import package_dir
 from depsafe.budget import StepCounter, TokenBudget
 from depsafe.environment import LocalEnvironment
-from depsafe.exceptions import FormatError, InterruptAgentFlow, LimitsExceeded, Submitted
+from depsafe.exceptions import FormatError, InterruptAgentFlow, LimitsExceeded
 from depsafe.model import LitellmModel
 
 
@@ -20,7 +20,7 @@ class DepSafeAgent:
         self.model = LitellmModel("deepseek/deepseek-v4-flash", os.getenv("DEEPSEEK_API_KEY"))
         self.env = LocalEnvironment()
         self.token_budget = TokenBudget(self.model.model_name, usage_ratio=0.7)
-        self.step_counter = StepCounter(global_budget=100, per_vuln_budget=15)
+        self.step_counter = StepCounter(global_budget=200)
         self.cost = 0.0
         self.n_consecutive_format_errors = 0
         self.logger = logging.getLogger("agent")
@@ -44,7 +44,7 @@ class DepSafeAgent:
             )
         )
 
-    def run(self, task: str):
+    async def run(self, task: str):
         self.config["task"] = task
         self.config.update(platform.uname()._asdict())
         self.messages = []
@@ -65,8 +65,9 @@ class DepSafeAgent:
                 self.step()
                 self.n_consecutive_format_errors = 0
             except FormatError as e:
-                2. per vuln step 计算 -- 限制修复的漏洞数和尝试的版本数。考虑fixed版本刚好冲突的可能，能否直接找到合适的？
-                3. token & cost 无论哪个达阈值，都手动调用降级工具
+
+                # 3. token & cost 无论哪个达阈值，都手动调用降级工具
+
                 # The call was billed before parsing failed, so query() never got to charge it.
                 self.cost += e.messages[0].get("extra", {}).get("cost", 0.0)
                 self.n_consecutive_format_errors += 1
@@ -94,11 +95,11 @@ class DepSafeAgent:
                 break
         return self.messages[-1].get("extra", {})
 
-    def step(self):
+    async def step(self):
         ai_message = self.query()
         self.execute(ai_message)
 
-    def query(self) -> dict:
+    async def query(self) -> dict:
         if self.step_counter.is_exhausted() or self.token_budget.is_exhausted():
             raise LimitsExceeded(
                 {
@@ -112,6 +113,6 @@ class DepSafeAgent:
         self.add_messages(ai_message)
         return ai_message
 
-    def execute(self, message: dict):
-        results = [self.env.execute(action) for action in message.get("extra").get("actions")]
-        self.messages += self.model.format_toolcall_observation_results(message, results)
+    async def execute(self, ai_message: dict):
+        results = [self.env.execute(action) for action in ai_message.get("extra").get("actions")]
+        self.messages += self.model.format_toolcall_observation_results(ai_message, results)
