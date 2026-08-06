@@ -3,21 +3,20 @@ import re
 from collections.abc import AsyncGenerator
 
 import httpx
+from dep_safe_agent.src.depsafe.tool.utils.subagent import SubAgent
 from packaging.version import InvalidVersion
 from packaging.version import parse as parse_version
 from pydantic import BaseModel, Field
 from tavily import TavilyClient
 
+from depsafe.budget import StepCounter
 from depsafe.environment import LocalEnvironment
-from depsafe.exceptions import Submitted
 from depsafe.model import BASH_TOOL_SCHEMA, LitellmModel
 
 
 class Changelog(BaseModel):
     pkg_name: str = Field(..., description="依赖包的名称")
-    changelogs: list[dict[str, str]] = Field(
-        ..., description="from_ver和to_ver之间每个版本的changelog内容"
-    )
+    changelogs: list[dict[str, str]] = Field(..., description="from_ver和to_ver之间每个版本的changelog内容")
     from_ver: str = Field(..., description="项目当前的依赖包版本")
     to_ver: str = Field(..., description="依赖包的第一个修复版本")
     source: str = Field(..., description="changelog来源")
@@ -67,12 +66,13 @@ async def _iter_github_releases(owner: str, repo: str) -> AsyncGenerator[dict, N
 class ChangelogOrchestrator:
     """编排器：统一管理降级逻辑"""
 
-    def __init__(self, model: LitellmModel):
-        self.env = LocalEnvironment()
+    def __init__(self, model: LitellmModel, env: LocalEnvironment, step_counter: StepCounter):
+        self.step_counter = step_counter
+        self.env = env
         self.env.local_tools["web_search"] = web_search
         self.env.local_tools["get_changelog"] = self.get_changelog
         self.raw_fetcher = RawFileFetcher()
-        self.llm_fallback = LLMSearchFallback(model, self.env)
+        self.llm_fallback = LLMSearchFallback(model, self.env, step_counter)
 
     async def get_changelog(self, pkg: str, from_ver: str, to_ver: str) -> Changelog:
         """
@@ -173,9 +173,7 @@ class RawFileFetcher:
                     continue
         return None
 
-    def _parse_markdown_changelog(
-        self, text: str, from_ver: str, to_ver: str
-    ) -> list[dict[str, str]]:
+    def _parse_markdown_changelog(self, text: str, from_ver: str, to_ver: str) -> list[dict[str, str]]:
         """
         专门解析 Markdown 格式的 Changelog。
         返回一个包含多个版本日志的列表。
@@ -195,9 +193,7 @@ class RawFileFetcher:
             if match:
                 # 1. 如果之前正在记录一个版本的日志，先把它保存下来
                 if current_version is not None and current_log:
-                    parsed_logs.append(
-                        {"ver_name": current_version, "changelog": "\n".join(current_log).strip()}
-                    )
+                    parsed_logs.append({"ver_name": current_version, "changelog": "\n".join(current_log).strip()})
                 # 2. 开始处理新版本
                 version_str = match.group(2).strip()
                 try:
@@ -211,9 +207,7 @@ class RawFileFetcher:
                 if current_log is not None:
                     current_log.append(line)
         if current_version is not None and current_log:
-            parsed_logs.append(
-                {"ver_name": current_version, "changelog": "\n".join(current_log).strip()}
-            )
+            parsed_logs.append({"ver_name": current_version, "changelog": "\n".join(current_log).strip()})
         parsed_logs.sort(key=lambda x: parse_version(x["ver_name"]), reverse=True)
         final_logs = []
         for log in parsed_logs:
@@ -232,7 +226,7 @@ def web_search(query: str) -> str:
     输入搜索关键词，返回相关的网页标题和内容摘要。
     """
     try:
-        tavily_client = TavilyClient(api_key=os.getenv('TAVILY_API_KEY'))
+        tavily_client = TavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
         response = tavily_client.search(query, max_results=3, include_raw_content=False)
         if not response.get("results"):
             return "未找到相关搜索结果。"
@@ -263,93 +257,111 @@ WEB_SEARCH_TOOL_SCHEMA = {
 }
 
 
-class LLMSearchFallback:
-    """降级策略：LLM 自主搜索（轻量版，带工具调用循环）"""
+SUBMIT_RESULT_TOOL_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "submit_result",
+        "description": (
+            "提交最终结果并结束当前任务。"
+            "当你已经收集到足够信息、可以给出最终结论时，必须调用此工具。"
+            "调用此工具后，任务将立即终止。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "result": {
+                    "type": "object",
+                    "description": "任务的最终结果，结构化对象。",
+                    "properties": {
+                        "pkg_name": {
+                            "type": "string",
+                            "description": "依赖包的名称",
+                        },
+                        "changelogs": {
+                            "type": "array",
+                            "description": "from_ver和to_ver之间每个版本的changelog内容",
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": {"type": "string"},
+                            },
+                        },
+                        "from_ver": {
+                            "type": "string",
+                            "description": "项目当前的依赖包版本",
+                        },
+                        "to_ver": {
+                            "type": "string",
+                            "description": "依赖包的第一个修复版本",
+                        },
+                        "source": {
+                            "type": "string",
+                            "description": "changelog来源",
+                        },
+                    },
+                    "required": [
+                        "pkg_name",
+                        "changelogs",
+                        "from_ver",
+                        "to_ver",
+                        "source",
+                    ],
+                }
+            },
+            "required": ["result"],
+        },
+    },
+}
 
-    def __init__(self, model: LitellmModel, env: LocalEnvironment):
+
+class LLMSearchFallback:
+    def __init__(self, model, env, step_counter: StepCounter):
         self.model = model
         self.env = env
+        self.step_counter = step_counter
 
-    async def search(self, pkg: str, from_ver: str, to_ver: str) -> "Changelog":
-        TavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
-        task_prompt = f"""
-你是一个专业的软件供应链安全分析师。请查找 Python 包 `{pkg}` 从版本 `{from_ver}` 到 `{to_ver}` 的变更日志。
+    async def search(self, pkg: str, from_ver: str, to_ver: str) -> Changelog:
+        tools = [WEB_SEARCH_TOOL_SCHEMA, BASH_TOOL_SCHEMA, SUBMIT_RESULT_TOOL_SCHEMA]
+        system_prompt = """\
+你是一个专业的软件供应链安全分析师。
+请通过调用工具获取信息，然后给出最终总结。
+不要直接输出文本，必须通过调用工具来交互。
+"""
+        user_prompt = f"""\
+请查找 Python 包 `{pkg}` 从版本 `{from_ver}` 到 `{to_ver}` 的变更日志。
 
 你可以使用以下工具：
 1. `web_search`: 在互联网上搜索信息。
 2. `bash`: 执行 shell 命令。
+3. `submit_result`: 当你收集到足够信息后，调用此工具提交最终总结。
 
 工作流程：
-1. 使用 `web_search` 搜索相关信息（建议搜索 "{pkg} github releases {to_ver}" 等）。
-2. 收集到足够信息后，**必须**调用 `bash` 工具执行以下命令来结束任务：
-   `echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT`
-   并在该命令的下一行输出你总结的最终报告内容。
+1. 使用 `web_search` 搜索相关信息（建议搜索 `{pkg} github releases {to_ver}` 等）。
+2. 分析搜索结果。
+3. 一旦你有了最终的总结，**必须**调用 `submit_result` 工具，将结构化的 changelog 信息放入 `result` 参数中。
+
+`result` 参数必须包含以下字段：
+- `pkg_name`: 依赖包名称
+- `changelogs`: 每个版本的 changelog 内容列表
+- `from_ver`: 当前版本
+- `to_ver`: 第一个修复版本
+- `source`: changelog 来源
 
 注意：不要直接输出文本，必须通过调用工具来交互。
 """
-        messages = [
-            {
-                "role": "system",
-                "content": "你是一个会使用搜索工具的助手。请通过调用工具获取信息，然后给出最终总结。",
-            },
-            {"role": "user", "content": task_prompt},
-        ]
-        max_steps = 3
-        fail_reason = None
-        for step in range(max_steps):
-            response = await self.model.query(
-                messages=messages, tools=[WEB_SEARCH_TOOL_SCHEMA, BASH_TOOL_SCHEMA]
-            )
-            actions = response.get("extra", {}).get("actions", [])
-            if not actions:
-                fail_reason = "LLM未调用任何工具。"
-                break
-            messages.append(response)
-            try:
-                results = [self.env.execute(action) for action in actions]
-                messages += self.model.format_toolcall_observation_results(response, results)
-            except Submitted as e:
-                final_summary = e.value["content"]
-                return await self._structure_output(final_summary, pkg, from_ver, to_ver)
-            except Exception:
-                pass
-        fail_reason = fail_reason if fail_reason else "LLM搜索任务达最大调用次数"
-        return Changelog(
+        sub_agent = SubAgent(
+            model=self.model,
+            env=self.env,
+            step_counter=self.step_counter,
+            max_steps=5,
+        )
+        result = await sub_agent.run(system_prompt, user_prompt, tools)
+        submission = Changelog(
             pkg_name=pkg,
-            changelogs=[{"ver_name": "search_failed", "changelog": fail_reason}],
+            changelogs=[],
             from_ver=from_ver,
             to_ver=to_ver,
-            source="llm_agentic_search",
+            source="llm_web_search",
         )
-
-    async def _structure_output(
-        self, summary_text: str, pkg: str, from_ver: str, to_ver: str
-    ) -> Changelog:
-        """使用结构化输出，将 LLM 的文本总结转换为 Changelog 对象"""
-        struct_prompt = f"""
-请将以下变更日志总结，严格按照 Changelog 数据模型的结构转换为 JSON 格式。
-
-总结内容：
-{summary_text}
-
-要求：
-1. pkg_name: {pkg}
-2. from_ver: {from_ver}
-3. to_ver: {to_ver}
-4. source: "llm_agentic_search"
-5. changelogs: 如果总结中提到了具体的版本，请拆分成多个字典；如果没有，就放一个包含整体总结的字典。
-"""
-        response = await self.model.query(
-            messages=[{"role": "user", "content": struct_prompt}],
-            response_format=Changelog,
-        )
-        parsed_changelog = response.get("parsed")
-        if isinstance(parsed_changelog, Changelog):
-            return parsed_changelog
-        return Changelog(
-            pkg_name=pkg,
-            changelogs=[{"ver_name": "llm_summary", "changelog": summary_text}],
-            from_ver=from_ver,
-            to_ver=to_ver,
-            source="llm_agentic_search",
-        )
+        if result.get("exit_status") == "Submitted":
+            submission = result["submission"]
+        return submission
