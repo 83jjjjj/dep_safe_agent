@@ -1,4 +1,3 @@
-import os
 
 
 class TokenBudget:
@@ -47,30 +46,23 @@ class TokenBudget:
 
 
 class StepCounter:
-    """双层步数计数器"""
+    """全局步数计数器"""
 
-    def __init__(self, global_budget: int, per_vuln_budget: int):
+    def __init__(self, global_budget: int):
         """
         Args:
             global_budget: 全局最大步数
-            per_vuln_budget: 单个漏洞处理的最大步数
         """
         self.global_budget = global_budget
-        self.per_vuln_budget = per_vuln_budget
         self.global_used = 0
-        self.per_vuln_used = 0
 
     def consume(self, n: int = 1):
         """消耗步数"""
         self.global_used += n
 
-    def reset_per_vuln(self):
-        """切换到下一个漏洞时重置 per_vuln 计数"""
-        self.per_vuln_used = 0
-
     def is_exhausted(self) -> bool:
         """检查是否超出任一预算"""
-        return self.global_used >= self.global_budget or self.per_vuln_used >= self.per_vuln_budget
+        return self.global_used >= self.global_budget
 
     def remaining_global(self) -> int:
         return max(0, self.global_budget - self.global_used)
