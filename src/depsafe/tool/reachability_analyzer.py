@@ -21,8 +21,8 @@ class ReachabilityAnalyzer:
     基于 AST 和符号表追踪的漏洞可达性分析器
     """
 
-    def __init__(self):
-        self.env = LocalEnvironment()
+    def __init__(self, env: LocalEnvironment):
+        self.env = env
         self.env.local_tools["analyze_reachability"] = self.analyze_reachability
 
     def analyze_reachability(self, file_path: str, target_functions: list[str]) -> list[dict]:
