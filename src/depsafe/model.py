@@ -117,40 +117,33 @@ CUSTOM_TOOLS_SCHEMA = [
         },
     },
     {
-        "title": "assess_priority",
-        "description": "评估漏洞修复的优先级。根据 CVSS 向量或公告严重性、可达性置信度以及是否存在破坏性变更，综合判定漏洞修复的优先级（P0-P4）并给出修复建议理由。",
-        "type": "object",
-        "properties": {
-            "input": {
-                "title": "PriorityInput",
-                "description": "包含漏洞评估所需信息的输入对象",
+        "type": "function",
+        "function": {
+            "name": "assess_priority",
+            "description": "评估漏洞修复的优先级。根据 CVSS 向量或公告严重性、可达性置信度以及是否存在破坏性变更，综合判定漏洞修复的优先级（P0-P4）并给出修复建议理由。",
+            "parameters": {
                 "type": "object",
                 "properties": {
                     "cvss_vector": {
-                        "title": "Cvss Vector",
-                        "description": "CVSS 向量字符串，用于解析严重性",
                         "type": "string",
+                        "description": "CVSS 向量字符串，用于解析严重性",
                     },
                     "advisory_severity": {
-                        "title": "Advisory Severity",
-                        "description": "安全公告中的严重性级别，如 CRITICAL, HIGH, MEDIUM, LOW",
                         "type": "string",
+                        "description": "安全公告中的严重性级别，如 CRITICAL, HIGH, MEDIUM, LOW",
                     },
                     "reachability_confidence": {
-                        "title": "Reachability Confidence",
-                        "description": "漏洞可达性置信度，可选值：NONE, LOW, MEDIUM, HIGH",
                         "type": "string",
+                        "description": "漏洞可达性置信度，可选值：NONE, LOW, MEDIUM, HIGH",
                     },
                     "has_breaking_change": {
-                        "title": "Has Breaking Change",
-                        "description": "修复版本是否包含破坏性变更",
                         "type": "boolean",
+                        "description": "修复版本是否包含破坏性变更",
                     },
                 },
                 "required": ["reachability_confidence", "has_breaking_change"],
-            }
+            },
         },
-        "required": ["input"],
     },
 ]
 
