@@ -4,8 +4,8 @@ import subprocess
 
 from depsafe.exceptions import Submitted
 from depsafe.tool.assess_priority import assess_priority
-from depsafe.tool.cve_checker import check_cve, check_github_advisory
-from depsafe.tool.dep_parser import parse_deps
+from depsafe.tool.utils.cve_checker import check_cve, check_github_advisory
+from depsafe.tool.utils.dep_parser import parse_deps
 
 
 class LocalEnvironment:
@@ -32,10 +32,21 @@ class LocalEnvironment:
             func = self.local_tools[tool_name]
             try:
                 if inspect.iscoroutinefunction(func):
-                    result = asyncio.get_event_loop().run_until_complete(func(**action["arguments"]))
+                    result = await func(**action["arguments"])
                 else:
                     result = func(**action["arguments"])
+                if tool_name == "scan_vulns" and not result:
+                    submission = "No more vulnerabilities are found."
+                    raise Submitted(
+                        {
+                            "role": "exit",
+                            "content": submission,
+                            "extra": {"exit_status": "Submitted", "submission": submission},
+                        }
+                    )
                 return {"output": result}
+            except Submitted:
+                raise
             except Exception as e:
                 return {"output": f"工具执行出错: {e}"}
         if tool_name == "bash":
