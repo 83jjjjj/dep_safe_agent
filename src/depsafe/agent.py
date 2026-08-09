@@ -8,7 +8,7 @@ import yaml
 from jinja2 import StrictUndefined, Template
 
 from depsafe import package_dir
-from depsafe.budget import StepCounter, TokenBudget
+from depsafe.budget import CostBudget, StepCounter, TokenBudget
 from depsafe.environment import LocalEnvironment
 from depsafe.exceptions import FormatError, InterruptAgentFlow, LimitsExceeded
 from depsafe.model import LitellmModel
@@ -21,8 +21,8 @@ class DepSafeAgent:
         self.model = LitellmModel("deepseek/deepseek-v4-flash", os.getenv("DEEPSEEK_API_KEY"))
         self.env = LocalEnvironment()
         self.token_budget = TokenBudget(self.model.model_name, usage_ratio=0.7)
-        self.step_counter = StepCounter(global_budget=200)
-        self.cost = 0.0
+        self.step_counter = StepCounter(step_limit=150)
+        self.cost_budget = CostBudget(cost_limit=10.0)
         self.vuln_budget = VulnBudget(vuln_limit=5)
         self.vuln_scanner = VulnerabilityScanner(self.vuln_budget, self.env)
         self.n_consecutive_format_errors = 0
@@ -55,6 +55,8 @@ class DepSafeAgent:
         self.config.update(platform.uname()._asdict())
         # 外层控制每次循环只处理vuln_limit个漏洞
         while True:
+            self.step_counter.reset()
+            self.token_budget.reset()
             self.messages = []
             self.add_messages(
                 {
@@ -74,10 +76,7 @@ class DepSafeAgent:
                     self.step()
                     self.n_consecutive_format_errors = 0
                 except FormatError as e:
-                    # 3. token & cost 无论哪个达阈值，都手动调用降级工具
-
-                    # The call was billed before parsing failed, so query() never got to charge it.
-                    self.cost += e.messages[0].get("extra", {}).get("cost", 0.0)
+                    self.cost_budget.consume(e.messages[0].get("extra", {}).get("cost", 0.0))
                     self.n_consecutive_format_errors += 1
                     if 0 < self.config.max_consecutive_format_errors <= self.n_consecutive_format_errors:
                         self.add_messages(
@@ -123,6 +122,7 @@ class DepSafeAgent:
             )
         self.step_counter.consume(1)
         ai_message = self.model.query(self.messages, token_budget=self.token_budget)
+        self.cost_budget.consume(ai_message.get("extra", {}).get("cost", 0.0))
         self.add_messages(ai_message)
         return ai_message
 

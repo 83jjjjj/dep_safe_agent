@@ -1,4 +1,5 @@
 import json
+import logging
 
 import litellm
 from dep_safe_agent.src.depsafe.budget import TokenBudget
@@ -147,6 +148,8 @@ CUSTOM_TOOLS_SCHEMA = [
     },
 ]
 
+logger = logging.getLogger("litellm_model")
+
 
 class LitellmModel:
     def __init__(self, model_name: str, api_key: str):
@@ -178,6 +181,7 @@ class LitellmModel:
             raise e
         if token_budget and hasattr(response, "usage"):
             token_budget.record(response.usage.prompt_tokens, response.usage.completion_tokens)
+        cost = self._calculate_cost(response)
         try:
             actions = self._parse_actions(response)
         except FormatError as e:
@@ -187,8 +191,19 @@ class LitellmModel:
                 e.messages[0]["extra"]["response"] = repr(response)
             raise
         message = response.choices[0].message.model_dump()
-        message["extra"] = {"actions": actions}
+        message["extra"] = {"actions": actions, "cost": cost}
         return message
+
+    def _calculate_cost(self, response) -> float:
+        try:
+            cost = litellm.cost_calculator.completion_cost(response, model=self.model_name)
+            if cost < 0.0:
+                logger.warning(f"Negative cost {cost} for model {self.model_name}, treating as 0")
+                return 0.0
+            return cost
+        except Exception as e:
+            logger.warning(f"Failed to calculate cost for {self.model_name}: {e}")
+            return 0.0
 
     def _parse_actions(self, response) -> list[dict]:
         """获取tool_calls转化为合法格式"""

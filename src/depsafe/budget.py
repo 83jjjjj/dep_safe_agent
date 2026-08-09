@@ -1,5 +1,3 @@
-
-
 class TokenBudget:
     """Token 预算管理器"""
 
@@ -19,10 +17,10 @@ class TokenBudget:
             usage_ratio: 安全使用比例，默认 70%（留 30% 给最后几轮降级操作）
         """
         self.model_name = model_name
-        self.max_tokens = self._get_context_window(model_name)
-        self.budget = int(self.max_tokens * usage_ratio)
-        self.input_used = 0
-        self.output_used = 0
+        self.context_limit = self._get_context_window(model_name)
+        self.token_limit = int(self.context_limit * usage_ratio)
+        self.input_token = 0
+        self.output_token = 0
 
     def _get_context_window(self, model_name: str) -> int:
         """获取模型的上下文窗口大小"""
@@ -30,39 +28,61 @@ class TokenBudget:
 
     def record(self, prompt_tokens: int, completion_tokens: int):
         """每次 API 调用后记录消耗"""
-        self.input_used += prompt_tokens
-        self.output_used += completion_tokens
+        self.input_token += prompt_tokens
+        self.output_token += completion_tokens
 
     @property
-    def total_used(self) -> int:
-        return self.input_used + self.output_used
+    def total_token(self) -> int:
+        return self.input_token + self.output_token
 
     def is_exhausted(self) -> bool:
         """总消耗是否超过预算"""
-        return self.total_used >= self.budget
+        return self.total_token >= self.token_limit
 
     def remaining(self) -> int:
-        return max(0, self.budget - self.total_used)
+        return max(0, self.token_limit - self.total_token)
+
+    def reset(self):
+        self.input_token = self.output_token = 0
+
+
+class CostBudget:
+    """费用预算管理器"""
+
+    def __init__(self, cost_limit: float = 10.0):
+        self.cost_limit = cost_limit
+        self.cost = 0.0
+
+    def consume(self, cost: float):
+        self.cost += cost
+
+    def is_exhausted(self) -> bool:
+        return self.cost >= self.cost_limit
+
+    def remaining(self) -> float:
+        return max(0.0, self.cost_limit - self.cost)
+
+    def reset(self):
+        self.cost = 0.0
 
 
 class StepCounter:
     """全局步数计数器"""
 
-    def __init__(self, global_budget: int):
-        """
-        Args:
-            global_budget: 全局最大步数
-        """
-        self.global_budget = global_budget
-        self.global_used = 0
+    def __init__(self, step_limit: int = 150):
+        self.step_limit = step_limit
+        self.n_step = 0
 
     def consume(self, n: int = 1):
         """消耗步数"""
-        self.global_used += n
+        self.n_step += n
 
     def is_exhausted(self) -> bool:
         """检查是否超出任一预算"""
-        return self.global_used >= self.global_budget
+        return self.n_step >= self.step_limit
 
     def remaining_global(self) -> int:
-        return max(0, self.global_budget - self.global_used)
+        return max(0, self.step_limit - self.n_step)
+
+    def reset(self):
+        self.n_step = 0
