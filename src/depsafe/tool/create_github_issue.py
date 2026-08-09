@@ -9,7 +9,7 @@ CREATE_GITHUB_ISSUE_SCHEMA = {
     "type": "function",
     "function": {
         "name": "create_github_issue",
-        "description": "在当前仓库创建安全修复 Issue。当所有版本自动修复均失败时调用。",
+        "description": "在当前仓库创建安全修复 Issue。当自动修复均失败时调用。",
         "parameters": {
             "type": "object",
             "properties": {
