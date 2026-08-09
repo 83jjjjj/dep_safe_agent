@@ -30,7 +30,7 @@ class SubAgent:
         model: LitellmModel,
         env: LocalEnvironment,
         step_counter: StepCounter,
-        step_limit: int = 10,
+        step_limit: int = 3,
     ):
         self.model = model
         self.env = env
