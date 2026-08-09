@@ -4,7 +4,7 @@ import subprocess
 
 from depsafe.exceptions import Submitted
 from depsafe.tool.assess_priority import assess_priority
-from depsafe.tool.utils.cve_checker import check_cve, check_github_advisory
+from depsafe.tool.utils.cve_checker import check_cve, check_github_advisory, Vulnerability
 from depsafe.tool.utils.dep_parser import parse_deps
 
 
@@ -35,7 +35,7 @@ class LocalEnvironment:
                     result = await func(**action["arguments"])
                 else:
                     result = func(**action["arguments"])
-                if tool_name == "scan_vulns" and not result:
+                if tool_name == "scan_vulns" and not result:  # 主循环结束标识
                     submission = "No more vulnerabilities are found."
                     raise Submitted(
                         {
@@ -44,6 +44,15 @@ class LocalEnvironment:
                             "extra": {"exit_status": "Submitted", "submission": submission},
                         }
                     )
+                if tool_name == "apply_fix_and_verify":  # 用于标记修复成功的漏洞
+                    output = result.get("output", {})
+                    if isinstance(output, dict) and output.get("success"):
+                        self.vuln_budget.mark_covered([
+                            Vulnerability(
+                                pkg_name=output["pkg_name"],
+                                cve_id=output["cve_id"],
+                            )
+                        ])
                 return {"output": result}
             except Submitted:
                 raise

@@ -46,7 +46,7 @@ class VulnBudget:
     def exhausted(self) -> bool:
         return self.found >= self.vuln_limit
 
-    def reset_round(self):
+    def reset_found(self):
         self.found = 0
 
     def is_all_done(self):

@@ -10,6 +10,8 @@ from pydantic import BaseModel, Field
 class FixAttemptResult(BaseModel):
     """单次修复尝试的结果"""
 
+    pkg_name: str = Field(..., description="包名，如 'requests'")
+    cve_id: str = Field(..., description="CVE 编号，如 'CVE-2024-1234'")
     success: bool = Field(..., description="是否修复成功")
     attempted_version: str = Field(..., description="尝试升级的目标版本")
     failure_reason: str | None = Field(
@@ -186,6 +188,8 @@ def apply_fix_and_verify(pkg_name: str, cve_id: str, target_version: str) -> Fix
     # 1. 环境自检：git 是必须的
     if not _has_tool("git"):
         return FixAttemptResult(
+            pkg_name=pkg_name,
+            cve_id=cve_id,
             success=False,
             attempted_version=target_version,
             failure_reason="ENV_MISSING",
@@ -197,6 +201,8 @@ def apply_fix_and_verify(pkg_name: str, cve_id: str, target_version: str) -> Fix
         branch_name = _create_branch(pkg_name, cve_id)
     except subprocess.CalledProcessError as e:
         return FixAttemptResult(
+            pkg_name=pkg_name,
+            cve_id=cve_id,
             success=False,
             attempted_version=target_version,
             failure_reason="ENV_MISSING",
@@ -213,6 +219,8 @@ def apply_fix_and_verify(pkg_name: str, cve_id: str, target_version: str) -> Fix
         updated = _update_pipfile(pkg_name, target_version)
     if not updated:
         return FixAttemptResult(
+            pkg_name=pkg_name,
+            cve_id=cve_id,
             success=False,
             attempted_version=target_version,
             failure_reason="UNSUPPORTED_FORMAT",
@@ -224,6 +232,8 @@ def apply_fix_and_verify(pkg_name: str, cve_id: str, target_version: str) -> Fix
     lock_success, lock_error = _regenerate_lockfile()
     if not lock_success:
         return FixAttemptResult(
+            pkg_name=pkg_name,
+            cve_id=cve_id,
             success=False,
             attempted_version=target_version,
             failure_reason="LOCK_FAILED",
@@ -234,6 +244,8 @@ def apply_fix_and_verify(pkg_name: str, cve_id: str, target_version: str) -> Fix
     # 5. 运行测试（尽力而为）
     if not _has_tests():
         return FixAttemptResult(
+            pkg_name=pkg_name,
+            cve_id=cve_id,
             success=True,
             attempted_version=target_version,
             branch_name=branch_name,
@@ -243,6 +255,8 @@ def apply_fix_and_verify(pkg_name: str, cve_id: str, target_version: str) -> Fix
     test_passed, test_output = _run_tests()
     if test_passed:
         return FixAttemptResult(
+            pkg_name=pkg_name,
+            cve_id=cve_id,
             success=True,
             attempted_version=target_version,
             branch_name=branch_name,
@@ -264,6 +278,8 @@ def apply_fix_and_verify(pkg_name: str, cve_id: str, target_version: str) -> Fix
         else:
             suggested_next_action = "TRY_NEXT_VERSION"
         return FixAttemptResult(
+            pkg_name=pkg_name,
+            cve_id=cve_id,
             success=False,
             attempted_version=target_version,
             failure_reason=failure_reason,
