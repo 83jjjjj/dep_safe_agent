@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from depsafe.environment import LocalEnvironment
 from depsafe.tool.utils.cve_checker import Vulnerability, check_cve
 from depsafe.tool.utils.dep_parser import parse_deps
@@ -53,6 +55,24 @@ class VulnBudget:
         """没有找到更多的漏洞"""
         return self.found == 0 and len(self.overflow) == 0
 
+    def to_dict(self) -> dict:
+        return {
+            "vuln_limit": self.vuln_limit,
+            "found": self.found,
+            "covered": [list(pair) for pair in self.covered],  # set→list
+            "overflow": [{"pkg": v.pkg, "cve_id": v.cve_id, "ver": v.ver} for v in self.overflow],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> VulnBudget:
+        budget = cls(vuln_limit=data["vuln_limit"])
+        budget.found = data["found"]
+        budget.covered = {tuple(pair) for pair in data["covered"]}  # list→set
+        budget.overflow = [
+            Vulnerability(pkg_name=v["pkg"], cve_id=v["cve_id"], ver=v["ver"]) for v in data.get("overflow", [])
+        ]
+        return budget
+
 
 class VulnerabilityScanner:
     def __init__(self, budget: VulnBudget, env: LocalEnvironment):
@@ -72,7 +92,7 @@ class VulnerabilityScanner:
             本轮需要修复的漏洞列表，数量不超过 budget.vuln_limit。
             若所有依赖均已修复且 overflow 为空，则返回空列表。
         """
-        self.budget.reset_round()
+        self.budget.reset_found()
         batch = self.budget._consume_overflow()
         if self.budget.exhausted:
             return batch

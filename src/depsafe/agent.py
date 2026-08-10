@@ -9,6 +9,7 @@ from jinja2 import StrictUndefined, Template
 
 from depsafe import package_dir
 from depsafe.budget import CostBudget, StepCounter, TokenBudget
+from depsafe.checkpointer import Trajectory
 from depsafe.environment import LocalEnvironment
 from depsafe.exceptions import FormatError, InterruptAgentFlow, LimitsExceeded
 from depsafe.model import LitellmModel
@@ -25,6 +26,7 @@ class DepSafeAgent:
         self.cost_budget = CostBudget(cost_limit=10.0)
         self.vuln_budget = VulnBudget(vuln_limit=5)
         self.vuln_scanner = VulnerabilityScanner(self.vuln_budget, self.env)
+        self.trajectory = Trajectory()
         self.n_consecutive_format_errors = 0
         self.logger = logging.getLogger("agent")
 
@@ -50,26 +52,39 @@ class DepSafeAgent:
             )
         )
 
+    def recover_trajectory(self) -> bool:
+        if not (self.trajectory.exists() and self.trajectory.validate_env()):
+            return False
+        loaded = self.trajectory.load()
+        if loaded is None:
+            return False
+        messages, budget_state = loaded
+        self.vuln_budget = VulnBudget.from_dict(budget_state)
+        if not messages:
+            self.logger.info("Resumed vuln_budget only, starting fresh message loop.")
+            return False
+        self.messages = messages
+        self.logger.info(
+            f"Resumed: {len(messages)} messages, "
+            f"{len(self.vuln_budget.covered)} covered, "
+            f"{len(self.vuln_budget.overflow)} overflow"
+        )
+        return True
+
     async def run(self, task: str):
         self.config["task"] = task
         self.config.update(platform.uname()._asdict())
+        resuming = self.recover_trajectory()
         # 外层控制每次循环只处理vuln_limit个漏洞
         while True:
-            self.step_counter.reset()
-            self.token_budget.reset()
-            self.messages = []
-            self.add_messages(
-                {
-                    "role": "system",
-                    "content": self._render_template(self.config["system_template"]),
-                }
-            )
-            self.add_messages(
-                {
-                    "role": "user",
-                    "content": self._render_template(self.config["instance_template"]),
-                }
-            )
+            if not resuming:
+                self.step_counter.reset()
+                self.token_budget.reset()
+                self.messages = []
+                self.add_messages({"role": "system", "content": self._render_template(self.config["system_template"])})
+                self.add_messages({"role": "user", "content": self._render_template(self.config["instance_template"])})
+            else:
+                resuming = False  # 仅跳过第一次
             # 内层控制每次循环走一步，即调用一次工具
             while True:
                 try:
@@ -95,9 +110,7 @@ class DepSafeAgent:
                     self.handle_uncaught_exception(e)
                     raise
                 finally:
-                    pass
-                    # todo
-                    # self.save(self.config.output_path)
+                    self.trajectory.save(self.messages, self.vuln_budget.to_dict())
                 if self.messages[-1].get("role") == "exit":
                     break
             if self.messages[-1].get("role") == "exit":
