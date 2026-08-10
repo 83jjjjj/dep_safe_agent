@@ -41,12 +41,54 @@ def _has_tool(tool_name: str) -> bool:
         return False
 
 
-def _create_branch(pkg_name: str, cve_id: str) -> str:
-    """创建修复分支"""
+def _prepare_fix_branch(pkg_name: str, cve_id: str) -> str:
+    """准备修复分支：远程存在则复用并重置，不存在则新建"""
     safe_cve = cve_id.replace("/", "-").replace(":", "-")
     branch = f"fix/security-update-{pkg_name}-{safe_cve}"
-    subprocess.run(["git", "checkout", "-b", branch], check=True, capture_output=True)
+    result = subprocess.run(["git", "ls-remote", "--heads", "origin", branch], capture_output=True, text=True)
+    remote_exists = bool(result.stdout.strip())
+    if remote_exists:
+        try:
+            subprocess.run(["git", "fetch", "origin", branch], check=True, capture_output=True)
+            subprocess.run(["git", "checkout", branch], check=True, capture_output=True)
+            subprocess.run(["git", "reset", "--hard", "origin/main"], check=True, capture_output=True)
+        except subprocess.CalledProcessError:
+            subprocess.run(["git", "checkout", "main"], check=True, capture_output=True)
+            subprocess.run(["git", "checkout", "-B", branch], check=True, capture_output=True)
+    else:
+        subprocess.run(["git", "checkout", "-b", branch], check=True, capture_output=True)
     return branch
+
+
+def _push_changes(branch: str, pkg_name: str, cve_id: str) -> tuple[bool, str]:
+    """封装 Rebase、Commit 和 Push 操作"""
+    # 1. Rebase
+    try:
+        subprocess.run(["git", "fetch", "origin", "main"], check=True, capture_output=True)
+        rebase_res = subprocess.run(["git", "rebase", "origin/main"], capture_output=True, text=True)
+        if rebase_res.returncode != 0:
+            subprocess.run(["git", "rebase", "--abort"], capture_output=True)
+            return False, f"Rebase conflict: {rebase_res.stderr.strip()}"
+    except subprocess.CalledProcessError as e:
+        err_msg = e.stderr.decode().strip() if isinstance(e.stderr, bytes) else str(e.stderr).strip()
+        return False, f"Git rebase error: {err_msg}"
+    # 2. Commit
+    try:
+        subprocess.run(["git", "add", "-A"], check=True, capture_output=True)
+        status = subprocess.run(["git", "diff", "--cached", "--quiet"], capture_output=True)
+        if status.returncode == 0:
+            return False, "No changes to commit"
+
+        commit_msg = f"fix(security): upgrade {pkg_name} to resolve {cve_id}"
+        subprocess.run(["git", "commit", "-m", commit_msg], check=True, capture_output=True)
+    except subprocess.CalledProcessError as e:
+        return False, f"Git commit error: {e.stderr.decode().strip()}"
+    # 3. Push
+    try:
+        subprocess.run(["git", "push", "-u", "origin", branch, "--force-with-lease"], check=True, capture_output=True)
+        return True, ""
+    except subprocess.CalledProcessError as e:
+        return False, f"Git push error: {e.stderr.decode().strip()}"
 
 
 def _update_pyproject(pkg_name: str, version: str) -> bool:
@@ -198,9 +240,7 @@ def _run_pip_check(venv_python: Path) -> tuple[bool, str]:
         return False, f"pip check error: {e}"
 
 
-def _verify_installation(
-    venv_python: Path, pkg_name: str, version: str, module_name: str | None = None
-) -> tuple[bool, str, str]:
+def _verify_installation(venv_python: Path, pkg_name: str, version: str, module_name: str) -> tuple[bool, str, str]:
     """
     递进式安装验证：install → import → pip check
     Returns: (success, failure_reason, raw_error)
@@ -292,7 +332,7 @@ def apply_fix_and_verify(
         )
     # 2. 创建修复分支
     try:
-        branch_name = _create_branch(pkg_name, cve_id)
+        branch_name = _prepare_fix_branch(pkg_name, cve_id)
     except subprocess.CalledProcessError as e:
         return FixAttemptResult(
             pkg_name=pkg_name,
@@ -352,6 +392,18 @@ def apply_fix_and_verify(
         )
     # 6. 运行项目测试
     if not _has_tests():
+        push_ok, push_err = _push_changes(branch_name, pkg_name, cve_id)
+        if not push_ok:
+            return FixAttemptResult(
+                pkg_name=pkg_name,
+                cve_id=cve_id,
+                success=False,
+                attempted_version=target_version,
+                failure_reason="GIT_PUSH_FAILED",
+                raw_error=push_err,
+                branch_name=branch_name,
+                suggested_next_action="MANUAL_REVIEW",
+            )
         return FixAttemptResult(
             pkg_name=pkg_name,
             cve_id=cve_id,
@@ -359,10 +411,21 @@ def apply_fix_and_verify(
             attempted_version=target_version,
             branch_name=branch_name,
             test_skipped=True,
-            suggested_next_action=None,
         )
     test_passed, test_output = _run_tests()
     if test_passed:
+        push_ok, push_err = _push_changes(branch_name, pkg_name, cve_id)
+        if not push_ok:
+            return FixAttemptResult(
+                pkg_name=pkg_name,
+                cve_id=cve_id,
+                success=False,
+                attempted_version=target_version,
+                failure_reason="GIT_PUSH_FAILED",
+                raw_error=push_err,
+                branch_name=branch_name,
+                suggested_next_action="MANUAL_REVIEW",
+            )
         return FixAttemptResult(
             pkg_name=pkg_name,
             cve_id=cve_id,
