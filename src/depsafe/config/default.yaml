@@ -48,6 +48,12 @@ agent:
 
     instance_template: |
       请解决以下问题：{{task}}
+docker:
+  image: "python:3.12-slim"
+  cwd: "/workspace"
+  timeout: 300
+  executable: "docker"
+  run_args: ["--memory=4g", "--cpus=2"]
 model:
   observation_template: |
     {%- if output.output | length < 10000 -%}

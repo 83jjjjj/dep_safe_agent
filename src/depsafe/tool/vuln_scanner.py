@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import logging
+
+from depsafe.docker import DockerEnvironment
 from depsafe.environment import LocalEnvironment
 from depsafe.tool.utils.cve_checker import Vulnerability, check_cve
 from depsafe.tool.utils.dep_parser import parse_deps
+
+logger = logging.getLogger(__name__)
 
 
 class VulnBudget:
@@ -75,10 +80,10 @@ class VulnBudget:
 
 
 class VulnerabilityScanner:
-    def __init__(self, budget: VulnBudget, env: LocalEnvironment):
+    def __init__(self, docker_env: DockerEnvironment, local_env: LocalEnvironment, budget: VulnBudget):
+        self.docker_env = docker_env
+        self.local_env = local_env
         self.budget = budget
-        self.env = env
-        self.env["scan_vulns"] = self.scan_vulns
 
     def scan_vulns(self, dep_file_path: str) -> list[Vulnerability]:
         """
@@ -96,12 +101,18 @@ class VulnerabilityScanner:
         batch = self.budget._consume_overflow()
         if self.budget.exhausted:
             return batch
-        dependencies = parse_deps(dep_file_path)
+        logger.info(f"[Docker] 解析依赖: {dep_file_path}")
+        dependencies = self.docker_env.execute({"name": "parse_deps", "arguments": {"dep_file_path": dep_file_path}})
+        # 处理parse deps的错误？
         for dep in dependencies:
             if self.budget.exhausted:
                 break
-            vulns = check_cve(dep.pkg, dep.ver)
+            logger.info(f"[Local] 查询 CVE: {dep['pkg']}=={dep['ver']}")
+            vulns = self.local_env.execute({
+                "name": "check_cve",
+                "arguments": {"pkg": dep["pkg"], "ver": dep["ver"]}
+            })
+            # 处理check cve的错误？
             accepted = self.budget.record(vulns)
             batch.extend(accepted)
         return batch
-        # 别忘了mark covered

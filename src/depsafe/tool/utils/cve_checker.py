@@ -42,9 +42,7 @@ def check_cve(pkg: str, ver: str) -> list[Vulnerability]:
         return []
     vulnerabilities = []
     for vuln in data.get("vulns", []):
-        cve_id = next(
-            (alias for alias in vuln.get("aliases", []) if alias.startswith("CVE-")), vuln.get("id")
-        )
+        cve_id = next((alias for alias in vuln.get("aliases", []) if alias.startswith("CVE-")), vuln.get("id"))
         severity = None
         if "severity" in vuln and isinstance(vuln["severity"], list):
             for s in vuln["severity"]:
@@ -65,9 +63,7 @@ def check_cve(pkg: str, ver: str) -> list[Vulnerability]:
         desc = vuln.get("summary", "") or vuln.get("details", "")
         try:
             vulnerabilities.append(
-                Vulnerability(
-                    pkg_name=pkg, cve_id=cve_id, severity=severity, fixed_ver=fixed_ver, desc=desc
-                )
+                Vulnerability(pkg_name=pkg, cve_id=cve_id, severity=severity, fixed_ver=fixed_ver, desc=desc)
             )
         except ValidationError as e:
             print(f"数据模型校验失败: {e}")
@@ -111,9 +107,7 @@ def check_github_advisory(pkg: str, ver: str) -> list[Vulnerability]:
     """
     variables = {"pkg": pkg}
     try:
-        response = httpx.post(
-            url, json={"query": query, "variables": variables}, headers=headers, timeout=10.0
-        )
+        response = httpx.post(url, json={"query": query, "variables": variables}, headers=headers, timeout=10.0)
         response.raise_for_status()
         data = response.json()
     except Exception as e:
@@ -133,9 +127,7 @@ def check_github_advisory(pkg: str, ver: str) -> list[Vulnerability]:
             except Exception:
                 pass
         advisory = node.get("advisory", {})
-        cve_id = next(
-            (i["value"] for i in advisory.get("identifiers", []) if i["type"] == "CVE"), None
-        )
+        cve_id = next((i["value"] for i in advisory.get("identifiers", []) if i["type"] == "CVE"), None)
         patched = node.get("firstPatchedVersion")
         fixed_ver = patched.get("identifier") if patched else None
         try:
@@ -151,9 +143,3 @@ def check_github_advisory(pkg: str, ver: str) -> list[Vulnerability]:
         except ValidationError as e:
             print(f"GitHub 数据模型校验失败: {e}")
     return vulnerabilities
-
-
-if __name__ == "__main__":
-    results = check_github_advisory("requests", "2.25.1")
-    json_output = [vuln.model_dump(mode="json") for vuln in results]
-    print(json_output)

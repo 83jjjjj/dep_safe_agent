@@ -1,89 +1,48 @@
-import asyncio
 import inspect
 import subprocess
 
 from depsafe.exceptions import Submitted
 from depsafe.tool.assess_priority import assess_priority
-from depsafe.tool.utils.cve_checker import check_cve, check_github_advisory, Vulnerability
-from depsafe.tool.utils.dep_parser import parse_deps
+from depsafe.tool.create_github_issue import create_github_issue
+from depsafe.tool.create_github_pr import create_github_pr
+from depsafe.tool.create_security_report import create_security_report
+from depsafe.tool.get_changelog import get_changelog
+from depsafe.tool.reachability_analyzer import analyze_reachability
+from depsafe.tool.utils.cve_checker import Vulnerability, check_cve, check_github_advisory
+from depsafe.tool.vuln_scanner import VulnBudget
 
 
 class LocalEnvironment:
-    def __init__(self):
-        self.local_tools = {
-            "parse_deps": parse_deps,
-            "check_cve": check_cve,
-            "check_github_advisory": check_github_advisory,
-            "assess_priority": assess_priority,
-        }
+    TOOL_REGISTRY = {
+        "check_cve": check_cve,
+        "analyze_reachability": analyze_reachability,
+        "get_changelog": get_changelog,
+        "assess_priority": assess_priority,
+        "create_github_issue": create_github_issue,
+        "create_github_pr": create_github_pr,
+        "create_security_report": create_security_report,
+    }
 
-    async def execute(self, action: dict) -> dict:
-        tool_name = action["name"]
-        if tool_name in self.local_tools:
-            if tool_name == "submit_result":  # subagent中结束标识
-                submission = action["arguments"]["result"]
-                raise Submitted(
-                    {
-                        "role": "exit",
-                        "content": submission,
-                        "extra": {"exit_status": "Submitted", "submission": submission},
-                    }
-                )
-            func = self.local_tools[tool_name]
-            try:
-                if inspect.iscoroutinefunction(func):
-                    result = await func(**action["arguments"])
-                else:
-                    result = func(**action["arguments"])
-                if tool_name == "scan_vulns" and not result:  # 主循环结束标识
-                    submission = "No more vulnerabilities are found."
-                    raise Submitted(
-                        {
-                            "role": "exit",
-                            "content": submission,
-                            "extra": {"exit_status": "Submitted", "submission": submission},
-                        }
-                    )
-                if tool_name == "apply_fix_and_verify":  # 用于标记修复成功的漏洞
-                    output = result.get("output", {})
-                    if isinstance(output, dict) and output.get("success"):
-                        self.vuln_budget.mark_covered([
-                            Vulnerability(
-                                pkg_name=output["pkg_name"],
-                                cve_id=output["cve_id"],
-                            )
-                        ])
-                return {"output": result}
-            except Submitted:
-                raise
-            except Exception as e:
-                return {"output": f"工具执行出错: {e}"}
-        if tool_name == "bash":
-            command = action["arguments"]["command"]
-            process = subprocess.Popen(
-                command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                shell=True,
-                text=True,
-                encoding="utf-8",
+    def __init__(self, vuln_budget: VulnBudget):
+        self.vuln_budget = vuln_budget
+
+    def execute(self, action: dict) -> dict:
+        tool_name = action.get("name", "")
+        args = action.get("arguments", {})
+        func = self.TOOL_REGISTRY.get(tool_name)
+        if not func:
+            return {"status": "error", "error": f"未知本地工具: {tool_name}"}
+        if tool_name == "submit_result":  # subagent中结束标识
+            submission = action["arguments"]["result"]
+            raise Submitted(
+                {
+                    "role": "exit",
+                    "content": submission,
+                    "extra": {"exit_status": "Submitted", "submission": submission},
+                }
             )
-            stdout, _ = process.communicate()
-            completed_process = subprocess.CompletedProcess(command, process.returncode, stdout=stdout)
-            output = {
-                "output": completed_process.stdout,
-                "returncode": completed_process.returncode,
-            }
-            lines = output["output"].lstrip().splitlines(keepends=True)
-            if lines and lines[0].strip() == "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT" and output["returncode"] == 0:
-                submission = "".join(lines[1:])
-                raise Submitted(
-                    {
-                        "role": "exit",
-                        "content": submission,
-                        "extra": {"exit_status": "Submitted", "submission": submission},
-                    }
-                )
-            return output
-        else:
-            return {"output": "Error, unknown tool call."}
+        try:
+            result = func(**args)
+            return {"output": result}
+        except Exception as e:
+            return {"output": f"工具执行出错: {e}"}

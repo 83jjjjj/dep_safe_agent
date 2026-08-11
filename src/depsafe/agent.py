@@ -10,6 +10,7 @@ from jinja2 import StrictUndefined, Template
 from depsafe import package_dir
 from depsafe.budget import CostBudget, StepCounter, TokenBudget
 from depsafe.checkpointer import Trajectory
+from depsafe.docker import DockerEnvironment
 from depsafe.environment import LocalEnvironment
 from depsafe.exceptions import FormatError, InterruptAgentFlow, LimitsExceeded
 from depsafe.model import LitellmModel
@@ -19,13 +20,14 @@ from depsafe.tool.vuln_scanner import VulnBudget, VulnerabilityScanner
 class DepSafeAgent:
     def __init__(self):
         self.config = yaml.safe_load(Path(package_dir / "config" / "default.yaml").read_text(encoding="utf-8"))["agent"]
-        self.model = LitellmModel("deepseek/deepseek-v4-flash", os.getenv("DEEPSEEK_API_KEY"))
-        self.env = LocalEnvironment()
         self.token_budget = TokenBudget(self.model.model_name, usage_ratio=0.7)
         self.step_counter = StepCounter(step_limit=150)
         self.cost_budget = CostBudget(cost_limit=10.0)
         self.vuln_budget = VulnBudget(vuln_limit=5)
-        self.vuln_scanner = VulnerabilityScanner(self.vuln_budget, self.env)
+        self.docker_env = DockerEnvironment(self.config, project_root)
+        self.local_env = LocalEnvironment(self.vuln_budget)
+        self.vuln_scanner = VulnerabilityScanner(self.vuln_budget, self.local_env, self.docker_env)
+        self.model = LitellmModel("deepseek/deepseek-v4-flash", os.getenv("DEEPSEEK_API_KEY"))
         self.trajectory = Trajectory()
         self.n_consecutive_format_errors = 0
         self.logger = logging.getLogger("agent")
@@ -71,7 +73,7 @@ class DepSafeAgent:
         )
         return True
 
-    async def run(self, task: str):
+    def run(self, task: str):
         self.config["task"] = task
         self.config.update(platform.uname()._asdict())
         resuming = self.recover_trajectory()
@@ -111,6 +113,7 @@ class DepSafeAgent:
                     raise
                 finally:
                     self.trajectory.save(self.messages, self.vuln_budget.to_dict())
+                    self.docker_env.cleanup()
                 if self.messages[-1].get("role") == "exit":
                     break
             if self.messages[-1].get("role") == "exit":
@@ -120,11 +123,11 @@ class DepSafeAgent:
                 break
         return self.messages[-1].get("extra", {})
 
-    async def step(self):
+    def step(self):
         ai_message = self.query()
         self.execute(ai_message)
 
-    async def query(self) -> dict:
+    def query(self) -> dict:
         if self.step_counter.is_exhausted() or self.token_budget.is_exhausted():
             raise LimitsExceeded(
                 {
@@ -139,6 +142,15 @@ class DepSafeAgent:
         self.add_messages(ai_message)
         return ai_message
 
-    async def execute(self, ai_message: dict):
-        results = [self.env.execute(action) for action in ai_message.get("extra").get("actions")]
+    def execute(self, ai_message: dict):
+        results = []
+        for action in ai_message.get("extra").get("actions"):
+            tool_name = action.get("name", "")
+            if tool_name == "scan_vulns":
+                args = action.get("arguments", {})
+                results.append(self.vuln_scanner.scan_vulns(**args))
+            elif tool_name in DockerEnvironment.ALLOWED_TOOLS:
+                results.append(self.docker_env.execute(action))
+            else:
+                results.append(self.local_env.execute(action))
         self.messages += self.model.format_toolcall_observation_results(ai_message, results)
