@@ -2,12 +2,15 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+import logging
 import os
 
 import httpx
 from packaging.specifiers import SpecifierSet
-from packaging.version import Version
+from packaging.version import InvalidVersion, Version
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+logger = logging.getLogger(__name__)
 
 
 class Vulnerability(BaseModel):
@@ -38,8 +41,7 @@ def check_cve(pkg: str, ver: str) -> list[Vulnerability]:
         response.raise_for_status()
         data = response.json()
     except Exception as e:
-        print(f"请求 OSV API 失败: {e}")
-        return []
+        raise ConnectionError(f"OSV API 查询失败 (pkg={pkg}, ver={ver}): {type(e).__name__}: {e}") from e
     vulnerabilities = []
     for vuln in data.get("vulns", []):
         cve_id = next((alias for alias in vuln.get("aliases", []) if alias.startswith("CVE-")), vuln.get("id"))
@@ -66,7 +68,7 @@ def check_cve(pkg: str, ver: str) -> list[Vulnerability]:
                 Vulnerability(pkg_name=pkg, cve_id=cve_id, severity=severity, fixed_ver=fixed_ver, desc=desc)
             )
         except ValidationError as e:
-            print(f"数据模型校验失败: {e}")
+            logger.warning(f"OSV 漏洞数据校验失败 (pkg={pkg}, cve={cve_id}): {e}")
     return list(set(vulnerabilities))
 
 
@@ -84,8 +86,7 @@ def check_github_advisory(pkg: str, ver: str) -> list[Vulnerability]:
     """
     token = os.getenv("GITHUB_TOKEN")
     if not token:
-        print("未找到 GITHUB_TOKEN，跳过 GitHub Advisory 查询")
-        return []
+        raise OSError("GITHUB_TOKEN 环境变量未设置，无法查询 GitHub Advisory Database")
     url = "https://api.github.com/graphql"
     headers = {"Authorization": f"Bearer {token}"}
     query = """
@@ -115,7 +116,11 @@ def check_github_advisory(pkg: str, ver: str) -> list[Vulnerability]:
         return []
     vulnerabilities = []
     nodes = data.get("data", {}).get("securityVulnerabilities", {}).get("nodes", [])
-    current_ver = Version(ver)
+    try:
+        current_ver = Version(ver)
+    except InvalidVersion:
+        logger.warning(f"无法解析版本号 '{ver}' (pkg={pkg})，跳过版本范围匹配")
+        current_ver = None
     for node in nodes:
         vuln_range_str = node.get("vulnerableVersionRange")
         if vuln_range_str:
@@ -125,7 +130,7 @@ def check_github_advisory(pkg: str, ver: str) -> list[Vulnerability]:
                 if current_ver not in spec:
                     continue
             except Exception:
-                pass
+                logger.warning(f"无法解析版本范围 '{vuln_range_str}' (pkg={pkg})，视为受影响")
         advisory = node.get("advisory", {})
         cve_id = next((i["value"] for i in advisory.get("identifiers", []) if i["type"] == "CVE"), None)
         patched = node.get("firstPatchedVersion")
@@ -141,5 +146,5 @@ def check_github_advisory(pkg: str, ver: str) -> list[Vulnerability]:
                 )
             )
         except ValidationError as e:
-            print(f"GitHub 数据模型校验失败: {e}")
+            logger.warning(f"GitHub Advisory 数据校验失败 (pkg={pkg}): {e}")
     return vulnerabilities

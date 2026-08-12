@@ -36,7 +36,7 @@ def parse_deps(file_path: str) -> list[dict]:
     path = Path(file_path)
     project_dir = path.parent
     if not path.exists():
-        raise FileNotFoundError(f"文件不存在: {file_path}")
+        raise FileNotFoundError(f"依赖文件不存在: {file_path}")
     # 优先解析锁文件
     poetry_lock = project_dir / "poetry.lock"
     uv_lock = project_dir / "uv.lock"
@@ -54,6 +54,8 @@ def parse_deps(file_path: str) -> list[dict]:
         deps = _compile_dependencies(file_path)
     elif file_name == "Pipfile":
         deps = _compile_pipfile_dependencies(file_path)
+    else:
+        raise ValueError(f"不支持的依赖文件格式: {file_name}")
     return [dep.model_dump(mode="json") for dep in deps]
 
 
@@ -78,8 +80,8 @@ def _compile_dependencies(file_path: str) -> list[Dependency]:
             ],
         )
         if result.exit_code != 0:
-            print(f"pip-compile 解析失败: {result.exception}")
-            return []
+            error_msg = str(result.exception) if result.exception else "Unknown error"
+            raise RuntimeError(f"pip-compile 解析失败 (exit_code={result.exit_code}): {error_msg}")
         return _parse_compiled_output(tmp_out_path, file_path)
     finally:
         Path(tmp_out_path).unlink(missing_ok=True)
@@ -117,19 +119,10 @@ def _compile_pipfile_dependencies(pipfile_path: Path) -> list[Dependency]:
     """
     project_dir = pipfile_path.parent
     lock_file_path = project_dir / "Pipfile.lock"
-    try:
-        # 设置 PIPENV_IGNORE_VIRTUALENVS=1 防止 pipenv 错误继承当前 Agent 所在的虚拟环境
-        env = {"PIPENV_IGNORE_VIRTUALENVS": "1"}
-        subprocess.run(
-            ["pipenv", "lock"], cwd=project_dir, check=True, capture_output=True, text=True, env=env
-        )
-        return _parse_pipfile_lock(lock_file_path)
-    except subprocess.CalledProcessError as e:
-        print(f"pipenv lock 执行失败: {e.stderr}")
-        return []
-    except Exception as e:
-        print(f"解析 Pipfile 依赖失败: {e}")
-        return []
+    # 设置 PIPENV_IGNORE_VIRTUALENVS=1 防止 pipenv 错误继承当前 Agent 所在的虚拟环境
+    env = {"PIPENV_IGNORE_VIRTUALENVS": "1"}
+    subprocess.run(["pipenv", "lock"], cwd=project_dir, check=True, capture_output=True, text=True, env=env)
+    return _parse_pipfile_lock(lock_file_path)
 
 
 def _parse_poetry_lock(lock_path: Path) -> list[Dependency]:
@@ -172,7 +165,6 @@ def _parse_uv_lock(lock_path: Path) -> list[Dependency]:
 def _parse_pipfile_lock(lock_path: Path) -> list[Dependency]:
     """解析 Pipfile.lock 文件"""
     import json
-
     with open(lock_path, encoding="utf-8") as f:
         data = json.load(f)
     deps = []

@@ -113,7 +113,6 @@ class DepSafeAgent:
                     raise
                 finally:
                     self.trajectory.save(self.messages, self.vuln_budget.to_dict())
-                    self.docker_env.cleanup()
                 if self.messages[-1].get("role") == "exit":
                     break
             if self.messages[-1].get("role") == "exit":
@@ -121,6 +120,7 @@ class DepSafeAgent:
             # 再次兜住无漏洞的情况
             if self.vuln_budget.is_all_done():
                 break
+        self.docker_env.cleanup()
         return self.messages[-1].get("extra", {})
 
     def step(self):

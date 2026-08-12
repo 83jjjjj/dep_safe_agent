@@ -13,6 +13,52 @@ logger = logging.getLogger(__name__)
 class DockerEnvironment:
     ALLOWED_TOOLS = {"bash", "parse_deps", "apply_fix_and_verify"}
 
+    RUNNER_SCRIPT = """
+import sys, json, traceback
+from dep_safe_agent.src.depsafe.tool.parse_deps import parse_deps
+from dep_safe_agent.src.depsafe.tool.apply_fix_and_verify import apply_fix_and_verify
+
+TOOLS = {
+    "parse_deps": parse_deps,
+    "apply_fix_and_verify": apply_fix_and_verify,
+}
+
+def main():
+    if len(sys.argv) < 3:
+        print(json.dumps({"status": "error", "message": "Runner: Missing arguments"}))
+        sys.exit(1)
+
+    tool_name = sys.argv[1]
+    try:
+        args = json.loads(sys.argv[2])
+    except json.JSONDecodeError as e:
+        print(json.dumps({"status": "error", "message": f"Runner: Invalid JSON args: {e}"}))
+        sys.exit(1)
+
+    func = TOOLS.get(tool_name)
+    if not func:
+        print(json.dumps({"status": "error", "message": f"Runner: Unknown tool '{tool_name}'"}))
+        sys.exit(1)
+
+    try:
+        result = func(**args)
+        print(json.dumps({"status": "success", "output": result}))
+        sys.exit(0)
+    except Exception as e:
+        exc_type = type(e).__name__
+        exc_args = e.args[0] if e.args else str(e)
+        print(json.dumps({
+            "status": "exception",
+            "exception_type": exc_type,
+            "exception_args": exc_args,
+            "traceback": traceback.format_exc()
+        }))
+        sys.exit(42)
+
+if __name__ == "__main__":
+    main()
+"""
+
     def __init__(self, config: dict, project_root: str):
         self.docker_cfg = config.get("docker", {})
         self.project_root = Path(project_root).resolve()
@@ -24,7 +70,14 @@ class DockerEnvironment:
         # 容器名：固定前缀 + 项目路径哈希，确保同项目幂等，重启时自动清理
         project_hash = hashlib.md5(str(self.project_root).encode()).hexdigest()[:8]
         self.container_name = f"vuln_agent_{project_hash}"
+        self._inject_runner()
         self._init_container()
+
+    def _inject_runner(self):
+        """将 Runner 脚本写入项目根目录，以便通过 volume 挂载进容器"""
+        runner_path = self.project_root / ".agent_runner.py"
+        runner_path.write_text(self.RUNNER_SCRIPT, encoding="utf-8")
+        logger.info(f"Runner 脚本已注入: {runner_path}")
 
     def _init_container(self):
         logger.info(f"清理残余容器: {self.container_name}")
@@ -50,114 +103,136 @@ class DockerEnvironment:
             raise RuntimeError(f"容器启动失败: {result.stderr}")
 
     def execute(self, action: dict) -> dict:
-        tool_name = action["name"]
+        tool_name = action.get("name", "")
         if tool_name not in self.ALLOWED_TOOLS:
-            return {"status": "error", "error": f"工具 {tool_name} 不允许在 Docker 中执行"}
+            return {
+                "output": f"Error: Tool '{tool_name}' not allowed in Docker.",
+                "returncode": -1,
+                "exception_info": f"Tool '{tool_name}' is not in ALLOWED_TOOLS",
+                "extra": {"exception_type": "ValueError", "exception": f"Disallowed tool: {tool_name}"},
+            }
         args = action.get("arguments", {})
-        container_cmd = self._build_container_cmd(tool_name, args)
+        if tool_name == "bash":
+            container_cmd = ["bash", "-c", args.get("command", "")]
+        else:
+            args_json = json.dumps(args)
+            container_cmd = ["python", ".agent_runner.py", tool_name, args_json]
         exec_cmd = [self.docker_bin, "exec", "-w", self.cwd, self.container_name, *container_cmd]
         try:
             result = subprocess.run(exec_cmd, capture_output=True, text=True, timeout=self.timeout)
-            # 判断returncode和scan/apply函数的时机相对位置待定
-            if tool_name == "scan_vulns" and not result:  # 主循环结束标识
-                submission = "No more vulnerabilities are found."
-                raise Submitted(
-                    {
-                        "role": "exit",
-                        "content": submission,
-                        "extra": {"exit_status": "Submitted", "submission": submission},
-                    }
-                )
-            if tool_name == "apply_fix_and_verify":  # 用于标记修复成功的漏洞
-                output = result.get("output", {})
-                if isinstance(output, dict) and output.get("success"):
-                    self.vuln_budget.mark_covered(
-                        [
-                            Vulnerability(
-                                pkg_name=output["pkg_name"],
-                                cve_id=output["cve_id"],
-                            )
-                        ]
-                    )
-            if result.returncode == 0:
-                parsed_output = self._parse_output(result.stdout)
-                return {
-                    "output": parsed_output,
-                    "returncode": 0,
-                    "extra": {"stdout": result.stdout, "stderr": result.stderr},
-                }
-            else:
-                return {
-                    "output": result.stdout + "\n" + result.stderr,
-                    "returncode": result.returncode,
-                    "exception_info": f"Command failed with code {result.returncode}",
-                    "extra": {"exception_type": "SubprocessError", "exception": result.stderr},
-                }
-        except Submitted:
-            raise
-        # 待合并？
-        except subprocess.TimeoutExpired:
-            return {
-                "output": f"Execution timed out ({self.timeout}s)",
-                "returncode": -1,
-                "exception_info": "TimeoutExpired",
-                "extra": {"exception_type": "TimeoutExpired", "exception": "Docker exec timeout"},
-            }
-        except Exception as e:
-            return {
-                "output": f"An error occurred while executing the command: {e}",
-                "returncode": -1,
-                "exception_info": f"An error occurred: {e}",
-                "extra": {"exception_type": type(e).__name__, "exception": str(e)},
-            }
-        if tool_name == "bash":
-            command = action["arguments"]["command"]
-            process = subprocess.Popen(
-                command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                shell=True,
-                text=True,
-                encoding="utf-8",
-            )
-            stdout, _ = process.communicate()
-            completed_process = subprocess.CompletedProcess(command, process.returncode, stdout=stdout)
+            if tool_name != "bash":
+                return self._handle_runner_output(result)
+            raw_output = result.stdout + result.stderr
             output = {
-                "output": completed_process.stdout,
-                "returncode": completed_process.returncode,
+                "output": raw_output,
+                "returncode": result.returncode,
+                "exception_info": "",
+                "extra": {},
             }
-            lines = output["output"].lstrip().splitlines(keepends=True)
-            if lines and lines[0].strip() == "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT" and output["returncode"] == 0:
+            lines = raw_output.lstrip().splitlines(keepends=True)
+            if lines and lines[0].strip() == "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT" and result.returncode == 0:
                 submission = "".join(lines[1:])
                 raise Submitted(
                     {
                         "role": "exit",
                         "content": submission,
-                        "extra": {"exit_status": "Submitted", "submission": submission},
+                        "extra": {
+                            "exit_status": "Submitted",
+                            "submission": submission,
+                        },
                     }
                 )
             return output
-        else:
-            return {"output": "Error, unknown tool call."}
+        except Submitted:
+            raise
+        except subprocess.TimeoutExpired as e:
+            raw_output = getattr(e, "output", None)
+            raw_output = (
+                raw_output.decode("utf-8", errors="replace") if isinstance(raw_output, bytes) else (raw_output or "")
+            )
+            return {
+                "output": raw_output,
+                "returncode": -1,
+                "exception_info": f"Execution timed out ({self.timeout}s)",
+                "extra": {
+                    "exception_type": "TimeoutExpired",
+                    "exception": str(e),
+                },
+            }
+        except Exception as e:
+            raw_output = getattr(e, "output", None)
+            raw_output = (
+                raw_output.decode("utf-8", errors="replace") if isinstance(raw_output, bytes) else (raw_output or "")
+            )
+            return {
+                "output": raw_output,
+                "returncode": -1,
+                "exception_info": f"An error occurred while executing the command: {e}",
+                "extra": {
+                    "exception_type": type(e).__name__,
+                    "exception": str(e),
+                },
+            }
 
-    def _build_container_cmd(self, tool_name: str, args: dict) -> list[str]:
-        """根据工具名构造容器内执行命令。你可以按自己的 CLI 设计修改这里。"""
-        if tool_name == "bash":
-            return ["bash", "-c", args.get("command", "")]
-        # 对于 parse_deps / apply_fix_and_verify，假设你有对应的 python 脚本
-        # 或者你可以直接把工具代码 copy 进镜像，这里用 python -m 调用
-        arg_str = " ".join(f"--{k} {v}" for k, v in args.items())
-        return ["python", "-m", f"agent.tools.{tool_name}", arg_str]
-
-    def _parse_output(self, stdout: str):
-        """尝试解析 stdout 末尾的 JSON，失败则返回原始字符串"""
-        lines = stdout.strip().splitlines()
-        if lines:
+    def _handle_runner_output(self, result: subprocess.CompletedProcess) -> dict:
+        """解析 Runner 脚本的 JSON 输出，处理异常穿透与结果解包"""
+        stdout = result.stdout.strip()
+        parsed = None
+        last_line = ""
+        if stdout:
+            last_line = stdout.splitlines()[-1].strip()
             try:
-                return json.loads(lines[-1])
+                parsed = json.loads(last_line)
             except json.JSONDecodeError:
                 pass
-        return stdout
+        # Runner 脚本本身崩溃（如 import 失败），没有产出 JSON
+        if parsed is None:
+            return {
+                "output": stdout + "\n" + result.stderr,
+                "returncode": result.returncode,
+                "exception_info": (
+                    f"Failed to parse runner output: last line is not valid JSON: {last_line[:200]}"
+                    if last_line
+                    else "Runner produced no stdout output"
+                ),
+                "extra": {
+                    "exception_type": "RunnerCrash",
+                    "exception": "Last line of stdout is not parseable JSON" if last_line else "Empty stdout",
+                },
+            }
+        # 异常处理
+        if parsed.get("status") == "exception":
+            exc_type = parsed.get("exception_type", "Unknown")
+            exc_args = parsed.get("exception_args", "")
+            tb = parsed.get("traceback", "")
+            return {
+                "output": None,
+                "returncode": 1,
+                "exception_info": f"{exc_type}: {exc_args}",
+                "extra": {
+                    "exception_type": exc_type,
+                    "exception": exc_args,
+                    "traceback": tb,
+                },
+            }
+        # 正常返回
+        if parsed.get("status") == "success":
+            return {
+                "output": parsed.get("output"),
+                "returncode": 0,
+                "exception_info": "",
+                "extra": {},
+            }
+        # Runner 内部错误（如未知工具名、参数解析失败）
+        return {
+            "output": parsed.get("message", "Unknown runner error"),
+            "returncode": result.returncode,
+            "exception_info": parsed.get("message", "Runner internal error"),
+            "extra": {
+                "exception_type": "RunnerError",
+                "exception": parsed.get("message", ""),
+            },
+        }
 
     def cleanup(self):
         logger.info(f"销毁容器: {self.container_name}")

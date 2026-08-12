@@ -2,12 +2,28 @@ from __future__ import annotations
 
 import logging
 
+from pydantic import BaseModel, Field
+
 from depsafe.docker import DockerEnvironment
 from depsafe.environment import LocalEnvironment
+from depsafe.exceptions import Submitted
 from depsafe.tool.utils.cve_checker import Vulnerability, check_cve
 from depsafe.tool.utils.dep_parser import parse_deps
 
 logger = logging.getLogger(__name__)
+
+
+class ScanResult(BaseModel):
+    """漏洞扫描结果集，所有错误均通过字段结构化返回，不抛出异常"""
+
+    vulns: list[Vulnerability] = Field(default_factory=list, description="成功扫描出的漏洞列表")
+    parse_deps_error: str | None = Field(
+        None, description="依赖解析(parse_deps)阶段的错误信息。若不为None，说明解析失败，vulns可能为空"
+    )
+    failed_cves: dict[str, str] = Field(
+        default_factory=dict,
+        description="CVE查询失败的依赖包及其原因。Key为'pkg==ver'，Value为具体的错误信息(exception_info)",
+    )
 
 
 class VulnBudget:
@@ -79,6 +95,25 @@ class VulnBudget:
         return budget
 
 
+SCAN_VULNS_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "scan_vulns",
+        "description": "扫描项目的依赖文件，查找已知漏洞（CVE）。返回本轮需要修复的漏洞列表，数量受系统预算控制。若返回空列表则表示无更多漏洞。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "dep_file_path": {
+                    "type": "string",
+                    "description": "依赖文件相对于项目根目录的路径，例如 'requirements.txt'、'pyproject.toml' 或 'Pipfile'。",
+                }
+            },
+            "required": ["dep_file_path"],
+        },
+    },
+}
+
+
 class VulnerabilityScanner:
     def __init__(self, docker_env: DockerEnvironment, local_env: LocalEnvironment, budget: VulnBudget):
         self.docker_env = docker_env
@@ -102,17 +137,24 @@ class VulnerabilityScanner:
         if self.budget.exhausted:
             return batch
         logger.info(f"[Docker] 解析依赖: {dep_file_path}")
-        dependencies = self.docker_env.execute({"name": "parse_deps", "arguments": {"dep_file_path": dep_file_path}})
-        # 处理parse deps的错误？
-        for dep in dependencies:
+        try:
+            result = self.docker_env.execute({"name": "parse_deps", "arguments": {"dep_file_path": dep_file_path}})
+        except Submitted:
+            raise
+        if result["returncode"] != 0:
+            logger.warning(f"parse_deps 失败: {result['exception_info']}")
+            return ScanResult(vulns=batch, parse_deps_error=result["exception_info"])
+        failed_cves: dict[str, str] = {}
+        for dep in result["output"]:
             if self.budget.exhausted:
                 break
             logger.info(f"[Local] 查询 CVE: {dep['pkg']}=={dep['ver']}")
-            vulns = self.local_env.execute({
-                "name": "check_cve",
-                "arguments": {"pkg": dep["pkg"], "ver": dep["ver"]}
-            })
-            # 处理check cve的错误？
-            accepted = self.budget.record(vulns)
+            result = self.local_env.execute({"name": "check_cve", "arguments": {"pkg": dep["pkg"], "ver": dep["ver"]}})
+            if result["returncode"] != 0:
+                key = f"{dep['pkg']}=={dep['ver']}"
+                failed_cves[key] = result["exception_info"]
+                logger.warning(f"CVE 查询失败 ({key}): {result['exception_info']}")
+                continue
+            accepted = self.budget.record(result["output"])
             batch.extend(accepted)
-        return batch
+        return ScanResult(vulns=batch, failed_cves=failed_cves)
