@@ -120,7 +120,7 @@ def _build_pr_body(
     return "\n".join(lines)
 
 
-def _enable_auto_merge(token: str, pr_node_id: str) -> bool:
+def _enable_auto_merge(token: str, pr_node_id: str) -> tuple[bool, str | None]:
     """
     通过 GraphQL API 开启 Auto-merge。
     注意：前提是仓库 Settings 中已开启 "Allow auto-merge"。
@@ -148,10 +148,11 @@ def _enable_auto_merge(token: str, pr_node_id: str) -> bool:
         response.raise_for_status()
         data = response.json()
         if "errors" in data:
-            return False
-        return True
-    except requests.RequestException:
-        return False
+            msgs = "; ".join(e.get("message", str(e)) for e in data["errors"])
+            return False, f"GraphQL errors: {msgs}"
+        return True, None
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
 
 
 def create_github_pr(
@@ -167,7 +168,7 @@ def create_github_pr(
     reachability: str,
     test_skipped: bool,
     breaking_changes: list[str] | None = None,
-) -> dict:
+) -> PRCreateResult:
     """
     创建安全修复 Pull Request。
     P0: 普通 PR + Auto-merge
@@ -177,12 +178,12 @@ def create_github_pr(
     # 1. 获取 GitHub Token
     token = os.getenv("GITHUB_TOKEN")
     if not token:
-        return PRCreateResult(success=False, error="GITHUB_TOKEN environment variable is not set").model_dump()
+        return PRCreateResult(success=False, error="GITHUB_TOKEN environment variable is not set")
     # 2. 解析仓库信息
     try:
         owner, repo = get_repo_info()
-    except RuntimeError as e:
-        return PRCreateResult(success=False, error=str(e)).model_dump()
+    except Exception as e:
+        return PRCreateResult(success=False, error=f"Failed to get repo info: {type(e).__name__}: {e}")
     # 3. 拼装 Body
     body = _build_pr_body(
         cve_id=cve_id,
@@ -225,15 +226,11 @@ def create_github_pr(
         pr_url = data["html_url"]
         pr_node_id = data.get("node_id")
         # 6. 如果是 P0，尝试通过 GraphQL 开启 Auto-merge
+        auto_merge_warning = None
         if priority == "P0" and pr_node_id:
-            _enable_auto_merge(token, pr_node_id)
-        return PRCreateResult(
-            success=True,
-            pr_url=pr_url,
-            pr_number=pr_number,
-        ).model_dump()
+            ok, err = _enable_auto_merge(token, pr_node_id)
+            if not ok:
+                auto_merge_warning = f"Auto-merge failed: {err}"
+        return PRCreateResult(success=True, pr_url=pr_url, pr_number=pr_number, error=auto_merge_warning)
     except requests.RequestException as e:
-        error_msg = str(e)
-        if hasattr(e, "response") and e.response is not None:
-            error_msg = f"HTTP {e.response.status_code}: {e.response.text}"
-        return PRCreateResult(success=False, error=error_msg).model_dump()
+        return PRCreateResult(success=False, error=f"{type(e).__name__}: {e}")

@@ -4,8 +4,10 @@ import logging
 import subprocess
 from pathlib import Path
 
-from dep_safe_agent.src.depsafe.exceptions import Submitted
-from dep_safe_agent.src.depsafe.tool.utils.cve_checker import Vulnerability
+from pydantic import ValidationError
+
+from depsafe.exceptions import Submitted
+from depsafe.tool.utils.cve_checker import Vulnerability
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +44,7 @@ def main():
 
     try:
         result = func(**args)
-        print(json.dumps({"status": "success", "output": result}))
+        print(json.dumps({"status": "success", "output": result.model_dump(mode="json") if isinstance(result, BaseModel) else result}))
         sys.exit(0)
     except Exception as e:
         exc_type = type(e).__name__
@@ -57,7 +59,7 @@ def main():
 
 if __name__ == "__main__":
     main()
-"""
+"""  # noqa: E501
 
     def __init__(self, config: dict, project_root: str):
         self.docker_cfg = config.get("docker", {})
@@ -121,7 +123,7 @@ if __name__ == "__main__":
         try:
             result = subprocess.run(exec_cmd, capture_output=True, text=True, timeout=self.timeout)
             if tool_name != "bash":
-                return self._handle_runner_output(result)
+                return self._handle_runner_output(tool_name, result)
             raw_output = result.stdout + result.stderr
             output = {
                 "output": raw_output,
@@ -174,7 +176,7 @@ if __name__ == "__main__":
                 },
             }
 
-    def _handle_runner_output(self, result: subprocess.CompletedProcess) -> dict:
+    def _handle_runner_output(self, tool_name: str, result: subprocess.CompletedProcess) -> dict:
         """解析 Runner 脚本的 JSON 输出，处理异常穿透与结果解包"""
         stdout = result.stdout.strip()
         parsed = None
@@ -217,6 +219,30 @@ if __name__ == "__main__":
             }
         # 正常返回
         if parsed.get("status") == "success":
+            if tool_name == "parse_deps" and len(parsed.get("output", [])) == 0:
+                submission = "No more vulnerabilities are found."
+                raise Submitted(
+                    {
+                        "role": "exit",
+                        "content": submission,
+                        "extra": {"exit_status": "Submitted", "submission": submission},
+                    }
+                )
+            if tool_name == "apply_fix_and_verify":
+                try:
+                    from depsafe.tool.apply_fix_and_verify import FixAttemptResult
+                    fix_result = FixAttemptResult.model_validate(parsed.get("output"))
+                    self.vuln_budget.mark_covered([Vulnerability(pkg_name=fix_result.pkg_name, cve_id=fix_result.cve_id)])
+                except ValidationError as e:
+                    return {
+                        "output": parsed.get("output"),
+                        "returncode": 1,
+                        "exception_info": f"Output validation failed for '{tool_name}': {e}",
+                        "extra": {
+                            "exception_type": "ValidationError",
+                            "exception": str(e),
+                        },
+                    }
             return {
                 "output": parsed.get("output"),
                 "returncode": 0,

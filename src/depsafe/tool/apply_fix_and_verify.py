@@ -15,14 +15,7 @@ class FixAttemptResult(BaseModel):
     cve_id: str = Field(..., description="CVE 编号，如 'CVE-2024-1234'")
     success: bool = Field(..., description="是否修复成功")
     attempted_version: str = Field(..., description="尝试升级的目标版本")
-    failure_reason: str | None = Field(
-        None,
-        description=(
-            "失败原因分类: DEPENDENCY_CONFLICT / TEST_FAILURE / TEST_TIMEOUT / "
-            "UNSUPPORTED_FORMAT / ENV_MISSING / LOCK_FAILED / INSTALL_FAILED / IMPORT_FAILED / PIP_CHECK_FAILED"
-        ),
-    )
-    raw_error: str | None = Field(None, description="原始错误日志（供LLM深度分析）")
+    error: str | None = Field(None, description="错误日志")
     branch_name: str | None = Field(None, description="创建的修复分支名（仅当修改文件成功时返回）")
     test_skipped: bool = Field(False, description="是否跳过了测试执行（因无测试套件）")
     suggested_next_action: str | None = Field(
@@ -56,7 +49,10 @@ def _prepare_fix_branch(pkg_name: str, cve_id: str) -> str:
             subprocess.run(["git", "checkout", "main"], check=True, capture_output=True)
             subprocess.run(["git", "checkout", "-B", branch], check=True, capture_output=True)
     else:
-        subprocess.run(["git", "checkout", "-b", branch], check=True, capture_output=True)
+        try:
+            subprocess.run(["git", "checkout", "-b", branch], check=True, capture_output=True)
+        except subprocess.CalledProcessError:
+            subprocess.run(["git", "checkout", branch], check=True, capture_output=True)
     return branch
 
 
@@ -64,40 +60,43 @@ def _push_changes(branch: str, pkg_name: str, cve_id: str) -> tuple[bool, str]:
     """封装 Rebase、Commit 和 Push 操作"""
     # 1. Rebase
     try:
-        subprocess.run(["git", "fetch", "origin", "main"], check=True, capture_output=True)
+        subprocess.run(["git", "fetch", "origin", "main"], check=True, capture_output=True, text=True)
         rebase_res = subprocess.run(["git", "rebase", "origin/main"], capture_output=True, text=True)
         if rebase_res.returncode != 0:
-            subprocess.run(["git", "rebase", "--abort"], capture_output=True)
+            subprocess.run(["git", "rebase", "--abort"], capture_output=True, text=True)
             return False, f"Rebase conflict: {rebase_res.stderr.strip()}"
     except subprocess.CalledProcessError as e:
-        err_msg = e.stderr.decode().strip() if isinstance(e.stderr, bytes) else str(e.stderr).strip()
-        return False, f"Git rebase error: {err_msg}"
+        return False, f"Git rebase error: {e.stderr.strip()}"
     # 2. Commit
     try:
-        subprocess.run(["git", "add", "-A"], check=True, capture_output=True)
-        status = subprocess.run(["git", "diff", "--cached", "--quiet"], capture_output=True)
+        subprocess.run(["git", "add", "-A"], check=True, capture_output=True, text=True)
+        status = subprocess.run(["git", "diff", "--cached", "--quiet"], capture_output=True, text=True)
         if status.returncode == 0:
             return False, "No changes to commit"
-
         commit_msg = f"fix(security): upgrade {pkg_name} to resolve {cve_id}"
-        subprocess.run(["git", "commit", "-m", commit_msg], check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", commit_msg], check=True, capture_output=True, text=True)
     except subprocess.CalledProcessError as e:
-        return False, f"Git commit error: {e.stderr.decode().strip()}"
+        return False, f"Git commit error: {e.stderr.strip()}"
     # 3. Push
     try:
-        subprocess.run(["git", "push", "-u", "origin", branch, "--force-with-lease"], check=True, capture_output=True)
+        subprocess.run(
+            ["git", "push", "-u", "origin", branch, "--force-with-lease"], check=True, capture_output=True, text=True
+        )
         return True, ""
     except subprocess.CalledProcessError as e:
-        return False, f"Git push error: {e.stderr.decode().strip()}"
+        return False, f"Git push error: {e.stderr.strip()}"
 
 
-def _update_pyproject(pkg_name: str, version: str) -> bool:
+def _update_pyproject(pkg_name: str, version: str) -> tuple[bool, str | None]:
     """更新 pyproject.toml 中的依赖版本"""
     path = Path("pyproject.toml")
     if not path.exists():
-        return False
-    with open(path, "r", encoding="utf-8") as f:
-        doc = tomlkit.load(f)
+        return False, None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            doc = tomlkit.load(f)
+    except Exception as e:
+        return False, f"Failed to parse pyproject.toml: {e}"
     updated = False
     # PEP 621 标准格式: [project] dependencies = ["requests>=2.0"]
     pattern = re.compile(rf"^{re.escape(pkg_name)}(\[.*\])?\s*([><=!~].*)?$")
@@ -115,17 +114,23 @@ def _update_pyproject(pkg_name: str, version: str) -> bool:
             poetry_deps[pkg_name] = f"=={version}"
             updated = True
     if updated:
-        with open(path, "w", encoding="utf-8") as f:
-            tomlkit.dump(doc, f)
-    return updated
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                tomlkit.dump(doc, f)
+        except Exception as e:
+            return False, f"Failed to write pyproject.toml: {e}"
+        return updated, None
 
 
-def _update_requirements(pkg_name: str, version: str) -> bool:
+def _update_requirements(pkg_name: str, version: str) -> tuple[bool, str | None]:
     """更新 requirements.txt 中的依赖版本"""
     path = Path("requirements.txt")
     if not path.exists():
-        return False
-    lines = path.read_text().splitlines()
+        return False, None
+    try:
+        lines = path.read_text().splitlines()
+    except Exception as e:
+        return False, f"Failed to write requirements.txt: {e}"
     updated = False
     pattern = re.compile(rf"^{re.escape(pkg_name)}([><=!~].*)?$")
     for i, line in enumerate(lines):
@@ -134,26 +139,35 @@ def _update_requirements(pkg_name: str, version: str) -> bool:
             updated = True
             break
     if updated:
-        path.write_text("\n".join(lines) + "\n")
-    return updated
+        try:
+            path.write_text("\n".join(lines) + "\n")
+        except Exception as e:
+            return False, f"Failed to write requirements.txt: {e}"
+    return updated, None
 
 
-def _update_pipfile(pkg_name: str, version: str) -> bool:
+def _update_pipfile(pkg_name: str, version: str) -> tuple[bool, str | None]:
     """更新 Pipfile 中的依赖版本"""
     path = Path("Pipfile")
     if not path.exists():
-        return False
-    with open(path, "r", encoding="utf-8") as f:
-        doc = tomlkit.load(f)
+        return False, None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            doc = tomlkit.load(f)
+    except Exception as e:
+        return False, f"Failed to write Pipfile: {e}"
     updated = False
     for section in ["packages", "dev-packages"]:
         if section in doc and pkg_name in doc[section]:
             doc[section][pkg_name] = f"=={version}"
             updated = True
     if updated:
-        with open(path, "w", encoding="utf-8") as f:
-            tomlkit.dump(doc, f)
-    return updated
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                tomlkit.dump(doc, f)
+        except Exception as e:
+            return False, f"Failed to write Pipfile: {e}"
+    return updated, None
 
 
 def _regenerate_lockfile() -> tuple[bool, str]:
@@ -240,22 +254,22 @@ def _run_pip_check(venv_python: Path) -> tuple[bool, str]:
         return False, f"pip check error: {e}"
 
 
-def _verify_installation(venv_python: Path, pkg_name: str, version: str, module_name: str) -> tuple[bool, str, str]:
+def _verify_installation(venv_python: Path, pkg_name: str, version: str, module_name: str) -> tuple[bool, str]:
     """
     递进式安装验证：install → import → pip check
-    Returns: (success, failure_reason, raw_error)
+    Returns: (success, error)
     """
     ok, err = _install_package(venv_python, pkg_name, version)
     if not ok:
-        return False, "INSTALL_FAILED", f"pip install failed: {err}"
+        return False, f"pip install failed: {err}"
 
     ok, err = _verify_import(venv_python, pkg_name, module_name)
     if not ok:
-        return False, "IMPORT_FAILED", f"Import verification failed: {err}"
+        return False, f"Import verification failed: {err}"
 
     ok, err = _run_pip_check(venv_python)
     if not ok:
-        return False, "PIP_CHECK_FAILED", f"pip check failed: {err}"
+        return False, f"pip check failed: {err}"
 
     return True, "", ""
 
@@ -326,8 +340,7 @@ def apply_fix_and_verify(
             cve_id=cve_id,
             success=False,
             attempted_version=target_version,
-            failure_reason="ENV_MISSING",
-            raw_error="git is not installed in sandbox",
+            error="git is not installed in sandbox",
             suggested_next_action="CREATE_REPORT_AND_ISSUE",
         )
     # 2. 创建修复分支
@@ -339,26 +352,30 @@ def apply_fix_and_verify(
             cve_id=cve_id,
             success=False,
             attempted_version=target_version,
-            failure_reason="ENV_MISSING",
-            raw_error=f"Failed to create branch: {e.stderr.decode()}",
+            error=f"Failed to create branch: {e.stderr.strip()}",
             suggested_next_action="CREATE_REPORT_AND_ISSUE",
         )
     # 3. 更新依赖文件
     updated = False
     if Path("pyproject.toml").exists():
-        updated = _update_pyproject(pkg_name, target_version)
+        ok, err = _update_pyproject(pkg_name, target_version)
+        if ok:
+            updated = True
     elif Path("requirements.txt").exists():
-        updated = _update_requirements(pkg_name, target_version)
+        ok, err = updated = _update_requirements(pkg_name, target_version)
+        if ok:
+            updated = True
     elif Path("Pipfile").exists():
-        updated = _update_pipfile(pkg_name, target_version)
+        ok, err = updated = _update_pipfile(pkg_name, target_version)
+        if ok:
+            updated = True
     if not updated:
         return FixAttemptResult(
             pkg_name=pkg_name,
             cve_id=cve_id,
             success=False,
             attempted_version=target_version,
-            failure_reason="UNSUPPORTED_FORMAT",
-            raw_error="No supported dependency file found (pyproject.toml/requirements.txt/Pipfile)",
+            error=err,
             branch_name=branch_name,
             suggested_next_action="CREATE_REPORT_AND_ISSUE",
         )
@@ -370,8 +387,7 @@ def apply_fix_and_verify(
             cve_id=cve_id,
             success=False,
             attempted_version=target_version,
-            failure_reason="LOCK_FAILED",
-            raw_error=lock_error,
+            error=lock_error,
             branch_name=branch_name,
             suggested_next_action="MANUAL_REVIEW",
         )
@@ -385,8 +401,7 @@ def apply_fix_and_verify(
             cve_id=cve_id,
             success=False,
             attempted_version=target_version,
-            failure_reason=verify_reason,
-            raw_error=verify_err,
+            error=verify_err,
             branch_name=branch_name,
             suggested_next_action="MANUAL_REVIEW",
         )
@@ -399,8 +414,7 @@ def apply_fix_and_verify(
                 cve_id=cve_id,
                 success=False,
                 attempted_version=target_version,
-                failure_reason="GIT_PUSH_FAILED",
-                raw_error=push_err,
+                error=push_err,
                 branch_name=branch_name,
                 suggested_next_action="MANUAL_REVIEW",
             )
@@ -421,8 +435,7 @@ def apply_fix_and_verify(
                 cve_id=cve_id,
                 success=False,
                 attempted_version=target_version,
-                failure_reason="GIT_PUSH_FAILED",
-                raw_error=push_err,
+                error=push_err,
                 branch_name=branch_name,
                 suggested_next_action="MANUAL_REVIEW",
             )
@@ -435,19 +448,12 @@ def apply_fix_and_verify(
             test_skipped=False,
             suggested_next_action=None,
         )
-    # 测试失败归因
-    failure_reason = "TEST_FAILURE"
-    if "timed out" in test_output.lower():
-        failure_reason = "TEST_TIMEOUT"
-    elif any(kw in test_output for kw in ("ImportError", "ModuleNotFoundError", "ResolutionImpossible")):
-        failure_reason = "DEPENDENCY_CONFLICT"
     return FixAttemptResult(
         pkg_name=pkg_name,
         cve_id=cve_id,
         success=False,
         attempted_version=target_version,
-        failure_reason=failure_reason,
-        raw_error=test_output,
+        error=test_output,
         branch_name=branch_name,
         test_skipped=False,
         suggested_next_action="MANUAL_REVIEW",

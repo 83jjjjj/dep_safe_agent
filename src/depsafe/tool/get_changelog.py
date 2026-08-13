@@ -3,27 +3,28 @@ import re
 from collections.abc import AsyncGenerator
 
 import httpx
-from dep_safe_agent.src.depsafe.tool.utils.subagent import SubAgent
 from packaging.version import InvalidVersion
 from packaging.version import parse as parse_version
 from pydantic import BaseModel, Field
 from tavily import TavilyClient
 
-from depsafe.budget import StepCounter
-from depsafe.environment import LocalEnvironment
+from depsafe.budget import CostBudget, StepCounter
+from depsafe.environment.local import LocalEnvironment
 from depsafe.model import BASH_TOOL_SCHEMA, LitellmModel
+from depsafe.tool.utils.subagent import SubAgent
 
 
 class Changelog(BaseModel):
     pkg_name: str = Field(..., description="依赖包的名称")
-    changelogs: list[dict[str, str]] = Field(..., description="from_ver和to_ver之间每个版本的changelog内容")
+    changelogs: list[dict[str, str]] = Field(default_factory=list, description="from_ver和to_ver之间每个版本的changelog内容")
     from_ver: str = Field(..., description="项目当前的依赖包版本")
     to_ver: str = Field(..., description="依赖包的第一个修复版本")
     source: str = Field(..., description="changelog来源")
+    warnings: list[str] = Field(default_factory=list, description="降级过程中的警告信息，记录了哪些步骤失败以及原因")
 
 
-async def _get_pypi_source_url(pkg: str) -> str | None:
-    """调 PyPI JSON API，返回 Source repo URL"""
+async def _get_pypi_source_url(pkg: str) -> tuple[str | None, str | None]:
+    """调 PyPI JSON API，返回 (Source repo URL, error_msg)"""
     pypi_url = f"https://pypi.org/pypi/{pkg}/json"
     async with httpx.AsyncClient() as client:
         try:
@@ -31,20 +32,19 @@ async def _get_pypi_source_url(pkg: str) -> str | None:
             response.raise_for_status()
             data = response.json()
             project_urls = data.get("info", {}).get("project_urls", {})
-            return project_urls.get("Source")
+            return project_urls.get("Source"), None
         except Exception as e:
-            print(f"访问PyPI失败：{e}")
-            return None
+            return None, f"{type(e).__name__}: {e}"
 
 
-async def _iter_github_releases(owner: str, repo: str) -> AsyncGenerator[dict, None]:
-    """调 GitHub Releases API，逐个返回 release"""
+async def _iter_github_releases(owner: str, repo: str, warnings: list[str]) -> AsyncGenerator[dict, None]:
+    """调 GitHub Releases API，逐个返回 release。错误写入 warnings。"""
     headers = {"Accept": "application/vnd.github.v3+json"}
     token = os.getenv("GITHUB_TOKEN")
     if token:
         headers["Authorization"] = f"Bearer {token}"
     else:
-        print("未找到 GITHUB_TOKEN，将使用未认证请求（限流严格）")
+        warnings.append("未找到 GITHUB_TOKEN，将使用未认证请求（限流严格）")
     github_api_url = f"https://api.github.com/repos/{owner}/{repo}/releases"
     page = 1
     async with httpx.AsyncClient(headers=headers) as client:
@@ -54,7 +54,7 @@ async def _iter_github_releases(owner: str, repo: str) -> AsyncGenerator[dict, N
                 response.raise_for_status()
                 releases = response.json()
             except Exception as e:
-                print(f"获取 GitHub Releases 失败: {e}")
+                warnings.append(f"GitHub Releases 请求失败 (page={page}): {type(e).__name__}: {e}")
                 break
             if not releases:
                 break
@@ -86,21 +86,27 @@ class ChangelogOrchestrator:
         Returns:
             依赖包的变更日志
         """
+        warnings: list[str] = []
         # 通过pypi拿到repo链接
-        repo_url = await _get_pypi_source_url(pkg)
+        repo_url, pypi_err = await _get_pypi_source_url(pkg)
+        if not repo_url:
+            warnings.append(f"PyPI 未找到 {pkg} 的 GitHub 仓库链接: {pypi_err or '无 Source URL'}")
         owner, repo = None, None
         if not repo_url:
             print(f"未找到 {pkg} 的 GitHub 仓库链接")
         # 访问github拿到release
         if repo_url:
             parts = repo_url.rstrip("/").split("/")
-            owner, repo = parts[-2], parts[-1]
+            if len(parts) >= 2:
+                owner, repo = parts[-2], parts[-1]
+            else:
+                warnings.append(f"PyPI Source URL 格式无法解析: {repo_url}")
         try:
             min_ver = parse_version(from_ver)
             max_ver = parse_version(to_ver)
             version_valid = True
         except InvalidVersion as e:
-            print(f"版本号格式无效：{e}")
+            warnings.append(f"版本号格式无效: {e}")
             version_valid = False
         if owner and repo and version_valid:
             changelogs = []
@@ -123,25 +129,19 @@ class ChangelogOrchestrator:
                     from_ver=from_ver,
                     to_ver=to_ver,
                     source=f"github_repo:{repo_url}",
+                    warnings=warnings,
                 )
         if owner and repo:
-            print("[降级] GitHub Releases 未找到，尝试探测 Raw 文件...")
-            raw_file_changelog = await self.raw_fetcher.fetch(owner, repo, from_ver, to_ver)
-            if raw_file_changelog:
-                return raw_file_changelog
-        print("[降级] Raw 文件未找到，启动 LLM 自主搜索...")
-        return await self.llm_fallback.search(pkg, from_ver, to_ver)
-
-
-async def _check_raw_file_exists(owner: str, repo: str, filename: str) -> bool:
-    """HEAD 请求检查 raw 文件是否存在"""
-    url = f"https://raw.githubusercontent.com/{owner}/{repo}/main/{filename}"
-    async with httpx.AsyncClient() as client:
-        try:
-            response = await client.head(url, follow_redirects=True)
-            return response.status_code == 200
-        except Exception:
-            return False
+            warnings.append("[降级] GitHub Releases 未找到，尝试探测 Raw 文件...")
+            raw_result, raw_warnings = await self.raw_fetcher.fetch(owner, repo, from_ver, to_ver)
+            warnings.extend(raw_warnings)
+            if raw_result:
+                raw_result.warnings = warnings
+                return raw_result
+        warnings.append("[降级] Raw 文件未找到，启动 LLM 自主搜索...")
+        llm_result = await self.llm_fallback.search(pkg, from_ver, to_ver)
+        llm_result.warnings = warnings + llm_result.warnings
+        return await llm_result
 
 
 class RawFileFetcher:
@@ -150,28 +150,43 @@ class RawFileFetcher:
     # 候选文件名优先级队列
     CANDIDATES = ["CHANGELOG.md", "CHANGES.md", "HISTORY.md"]
 
-    async def fetch(self, owner: str, repo: str, from_ver: str, to_ver: str) -> Changelog | None:
-        """并发探测候选文件，只请求头部更快速，收到200再下载内容"""
+    async def fetch(self, owner: str, repo: str, from_ver: str, to_ver: str) -> tuple["Changelog | None", list[str]]:
+        """并发探测候选文件，收到 200 再下载内容。返回 (Changelog | None, warnings)。"""
+        warnings: list[str] = []
         base_raw_url = f"https://raw.githubusercontent.com/{owner}/{repo}/main"
         async with httpx.AsyncClient() as client:
             for filename in self.CANDIDATES:
                 url = f"{base_raw_url}/{filename}"
+                # 直接在此处进行 HEAD 检查，避免重复创建 client
                 try:
-                    if await _check_raw_file_exists(owner, repo, filename):
-                        get_resp = await client.get(url, follow_redirects=True)
-                        content = get_resp.text
-                        parsed_logs = self._parse_markdown_changelog(content, from_ver, to_ver)
-                        if parsed_logs:
-                            return Changelog(
+                    head_resp = await client.head(url, follow_redirects=True, timeout=10.0)
+                    if head_resp.status_code != 200:
+                        continue
+                except Exception as e:
+                    warnings.append(f"检查 {filename} 是否存在时出错: {type(e).__name__}: {e}")
+                    continue
+                # 存在则下载内容
+                try:
+                    get_resp = await client.get(url, follow_redirects=True, timeout=15.0)
+                    get_resp.raise_for_status()
+                    content = get_resp.text
+                    parsed_logs = self._parse_markdown_changelog(content, from_ver, to_ver)
+                    if parsed_logs:
+                        return (
+                            Changelog(
                                 pkg_name=repo,
                                 changelogs=parsed_logs,
                                 from_ver=from_ver,
                                 to_ver=to_ver,
                                 source=f"github_raw_file:{filename}",
-                            )
-                except Exception:
+                            ),
+                            warnings,
+                        )
+                    warnings.append(f"{filename} 存在但未解析出匹配版本的 changelog")
+                except Exception as e:
+                    warnings.append(f"下载 {filename} 失败: {type(e).__name__}: {e}")
                     continue
-        return None
+        return None, warnings
 
     def _parse_markdown_changelog(self, text: str, from_ver: str, to_ver: str) -> list[dict[str, str]]:
         """
@@ -235,7 +250,7 @@ def web_search(query: str) -> str:
             formatted_results.append(f"### {r['title']}\n来源: {r['url']}\n{r['content']}")
         return "\n\n---\n\n".join(formatted_results)
     except Exception as e:
-        return f"搜索执行失败: {e}"
+        return f"搜索执行失败: {type(e).__name__}: {e}"
 
 
 WEB_SEARCH_TOOL_SCHEMA = {
@@ -314,10 +329,11 @@ SUBMIT_RESULT_TOOL_SCHEMA = {
 
 
 class LLMSearchFallback:
-    def __init__(self, model, env, step_counter: StepCounter):
+    def __init__(self, model: LitellmModel, env: LocalEnvironment, step_counter: StepCounter, cost_budget: CostBudget):
         self.model = model
         self.env = env
         self.step_counter = step_counter
+        self.cost_budget = cost_budget
 
     async def search(self, pkg: str, from_ver: str, to_ver: str) -> Changelog:
         tools = [WEB_SEARCH_TOOL_SCHEMA, BASH_TOOL_SCHEMA, SUBMIT_RESULT_TOOL_SCHEMA]
@@ -352,16 +368,19 @@ class LLMSearchFallback:
             model=self.model,
             env=self.env,
             step_counter=self.step_counter,
+            cost_budget=self.cost_budget,
             max_steps=5,
         )
         result = await sub_agent.run(system_prompt, user_prompt, tools)
-        submission = Changelog(
+        warnings: list[str] = []
+        if result.get("exit_status") == "Submitted":
+            return result["submission"]
+        warnings.append(f"LLM SubAgent 未能提交结果 (exit_status={result.get('exit_status')}), raw={result}")
+        return Changelog(
             pkg_name=pkg,
             changelogs=[],
             from_ver=from_ver,
             to_ver=to_ver,
             source="llm_web_search",
+            warnings=warnings,
         )
-        if result.get("exit_status") == "Submitted":
-            submission = result["submission"]
-        return submission

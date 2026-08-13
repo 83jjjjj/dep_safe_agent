@@ -3,53 +3,47 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-CREATE_SECURITY_REPORT_SCHEMA = {
-    "type": "function",
-    "function": {
-        "name": "create_security_report",
-        "description": "将漏洞修复尝试的结果追加到 SECURITY_FIX_REPORT.md。当所有版本自动修复均失败时调用。",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "pkg_name": {"type": "string", "description": "待修复的包名"},
-                "cve_id": {"type": "string", "description": "CVE 编号"},
-                "priority": {"type": "string", "description": "漏洞优先级，如 P0/P1/P2/P3/P4"},
-                "reachability": {"type": "string", "description": "漏洞可达性，如 reachable/unreachable/unknown"},
-                "fix_suggestion": {"type": "string", "description": "修复建议（当自动修复失败时由 LLM 生成）"},
-                "attempts": {
-                    "type": "array",
-                    "description": "所有修复尝试的结果列表",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "success": {"type": "boolean"},
-                            "attempted_version": {"type": "string"},
-                            "failure_reason": {"type": "string"},
-                            "raw_error": {"type": "string"},
-                            "branch_name": {"type": "string"},
-                            "test_skipped": {"type": "boolean"},
-                        },
-                        "required": ["success", "attempted_version"],
-                    },
-                },
-            },
-            "required": ["pkg_name", "cve_id", "priority", "reachability", "attempts"],
-        },
-    },
-}
-
 
 class AttemptRecord(BaseModel):
     """单次尝试记录（从 FixAttemptResult 中提取）"""
 
     success: bool = Field(..., description="本次修复尝试是否成功")
     attempted_version: str = Field(..., description="本次尝试升级的目标版本号，如 '2.31.0'")
-    failure_reason: str | None = Field(
-        None, description="失败原因分类，如 DEPENDENCY_CONFLICT / TEST_FAILURE / TEST_TIMEOUT / LOCK_FAILED"
-    )
-    raw_error: str | None = Field(None, description="原始错误日志，包含完整的报错堆栈信息")
+    raw_error: str | None = Field(None, description="错误日志，包含完整的报错堆栈信息")
     branch_name: str | None = Field(None, description="本次尝试创建的 Git 修复分支名称")
     test_skipped: bool = Field(False, description="是否因为项目中没有测试套件而跳过了测试执行")
+
+
+class CreateSecurityReportInput(BaseModel):
+    """create_security_report 工具的输入参数"""
+
+    pkg_name: str = Field(..., description="待修复的包名")
+    cve_id: str = Field(..., description="CVE 编号，如 CVE-2023-xxxxx")
+    priority: str = Field(..., description="漏洞优先级：P0/P1/P2/P3/P4")
+    reachability: str = Field(..., description="漏洞可达性：reachable/unreachable/unknown")
+    fix_suggestion: str | None = Field(None, description="自动修复全部失败时由 LLM 生成的修复建议")
+    attempts: list[AttemptRecord] = Field(..., description="所有修复尝试的结果列表，按尝试顺序排列")
+
+
+# 自动生成 schema，与 AttemptRecord 的 Field 描述完全同步
+CREATE_SECURITY_REPORT_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "create_security_report",
+        "description": "将漏洞修复尝试的结果追加到 SECURITY_FIX_REPORT.md。当所有版本自动修复均失败时调用。",
+        "parameters": CreateSecurityReportInput.model_json_schema(),
+    },
+}
+
+
+class ReportCreateResult(BaseModel):
+    """安全修复报告创建结果"""
+
+    success: bool = Field(..., description="报告是否成功写入")
+    report_path: str | None = Field(None, description="报告文件的绝对路径，失败时为 None")
+    cve_id: str | None = Field(None, description="本次追加的 CVE 编号")
+    message: str | None = Field(None, description="成功时的摘要信息")
+    error: str | None = Field(None, description="失败时的错误详情，成功时为 None")
 
 
 def _build_report_section(
@@ -89,8 +83,7 @@ def _build_report_section(
     )
     for attempt in attempts:
         status = "✅" if attempt.success else "❌"
-        reason = attempt.failure_reason or "-"
-        lines.append(f"| {attempt.attempted_version} | {status} | {reason} |")
+        lines.append(f"| {attempt.attempted_version} | {status} |")
     failed_attempts = [a for a in attempts if not a.success and a.raw_error]
     if failed_attempts:
         lines.extend(
@@ -139,7 +132,10 @@ def create_security_report(
     """
     report_path = Path("SECURITY_FIX_REPORT.md")
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    parsed_attempts = [AttemptRecord(**a) for a in attempts]
+    try:
+        parsed_attempts = [AttemptRecord(**a) for a in attempts]
+    except Exception as e:
+        return {"success": False, "error": f"Failed to parse attempts: {type(e).__name__}: {e}"}
     section = _build_report_section(
         pkg_name=pkg_name,
         cve_id=cve_id,
@@ -155,9 +151,13 @@ def create_security_report(
             f"> Auto-generated at {timestamp}\n\n"
             "This report contains all security vulnerability fix attempts.\n"
         )
-        report_path.write_text(header, encoding="utf-8")
-    with open(report_path, "a", encoding="utf-8") as f:
-        f.write(section)
+    try:
+        if not report_path.exists():
+            report_path.write_text(header, encoding="utf-8")
+        with open(report_path, "a", encoding="utf-8") as f:
+            f.write(section)
+    except OSError as e:
+        return {"success": False, "error": f"Failed to write report: {type(e).__name__}: {e}"}
     return {
         "success": True,
         "report_path": str(report_path.resolve()),

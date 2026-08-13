@@ -4,8 +4,8 @@ import logging
 
 from pydantic import BaseModel, Field
 
-from depsafe.docker import DockerEnvironment
-from depsafe.environment import LocalEnvironment
+from depsafe.environment.docker import DockerEnvironment
+from depsafe.environment.local import LocalEnvironment
 from depsafe.exceptions import Submitted
 from depsafe.tool.utils.cve_checker import Vulnerability, check_cve
 from depsafe.tool.utils.dep_parser import parse_deps

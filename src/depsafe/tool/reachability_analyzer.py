@@ -3,7 +3,7 @@ import os
 
 from pydantic import BaseModel, Field
 
-from depsafe.environment import LocalEnvironment
+from depsafe.environment.local import LocalEnvironment
 
 
 class CallEvidence(BaseModel):
@@ -16,16 +16,21 @@ class CallEvidence(BaseModel):
     resolved_path: str = Field(..., description="解析路径")
 
 
+class ReachabilityResult(BaseModel):
+    """可达性分析结果"""
+
+    evidences: list[CallEvidence] = Field(default_factory=list, description="发现的调用证据列表")
+    errors: dict[str, str] = Field(default_factory=dict, description="分析过程中的错误，key=文件路径，value=错误描述")
+
+
 class ReachabilityAnalyzer:
-    """
-    基于 AST 和符号表追踪的漏洞可达性分析器
-    """
+    """基于 AST 和符号表追踪的漏洞可达性分析器"""
 
     def __init__(self, env: LocalEnvironment):
         self.env = env
         self.env.local_tools["analyze_reachability"] = self.analyze_reachability
 
-    def analyze_reachability(self, file_path: str, target_functions: list[str]) -> list[dict]:
+    def analyze_reachability(self, file_path: str, target_functions: list[str]) -> dict:
         """
         分析指定代码文件中，对目标函数的调用可达性。
         这是一个静态代码分析工具，用于发现潜在的安全风险。
@@ -35,24 +40,21 @@ class ReachabilityAnalyzer:
             target_functions: 需要追踪的目标函数列表，例如 ["requests.get", "os.system"]。
 
         Returns:
-            一个包含所有发现证据的列表，每个证据是一个字典。
+            ReachabilityResult 的字典形式，包含 evidences 和 errors。
         """
-        evidences = self.analyze_file(file_path, set(target_functions))
-        return [e.model_dump() for e in evidences]
+        result = self.analyze_file(file_path, set(target_functions))
+        return result.model_dump()
 
-    def analyze_file(self, file_path: str, target_functions: set[str] | None = None) -> list[CallEvidence]:
-        """
-        分析单个文件的可达性
-        """
+    def analyze_file(self, file_path: str, target_functions: set[str]) -> ReachabilityResult:
+        """分析单个文件的可达性"""
         if not os.path.exists(file_path):
-            return []
+            return ReachabilityResult(errors={file_path: "文件不存在"})
         try:
             with open(file_path, encoding="utf-8") as f:
                 source = f.read()
             tree = ast.parse(source)
         except Exception as e:
-            print(f"解析文件失败 {file_path}: {e}")
-            return []
+            return ReachabilityResult(errors={file_path: f"{type(e).__name__}: {e}"})
         # 第一遍扫描：构建符号表 (处理 Import 和 Assign)
         # 结构: { "别名": "真实路径", "func": "requests.get" }
         symbol_table: dict[str, str] = {}
@@ -64,12 +66,10 @@ class ReachabilityAnalyzer:
         self._build_symbol_table(tree, symbol_table)
         # 第二遍扫描：查找调用并匹配
         evidences = self._scan_calls(target_functions, tree, symbol_table, file_path, source.splitlines())
-        return evidences
+        return ReachabilityResult(evidences=evidences)
 
     def _build_symbol_table(self, tree: ast.AST, symbol_table: dict[str, str]):
-        """
-        第一遍扫描：提取 Import 和 变量赋值信息
-        """
+        """第一遍扫描：提取 Import 和 变量赋值信息"""
         for node in ast.walk(tree):
             # 处理 import requests as req
             if isinstance(node, ast.Import):
@@ -99,11 +99,9 @@ class ReachabilityAnalyzer:
         tree: ast.AST,
         symbol_table: dict[str, str],
         file_path: str,
-        lines: list[str],
+        lines: list[str]
     ) -> list[CallEvidence]:
-        """
-        第二遍扫描：查找 Call 节点并验证
-        """
+        """第二遍扫描：查找 Call 节点并验证"""
         evidences = []
         for node in ast.walk(tree):
             if isinstance(node, ast.Call):
@@ -129,9 +127,7 @@ class ReachabilityAnalyzer:
         return evidences
 
     def _resolve_call_path(self, node: ast.Call, symbol_table: dict[str, str]) -> str | None:
-        """
-        尝试解析一个 Call 节点的真实路径
-        """
+        """尝试解析一个 Call 节点的真实路径"""
         # 场景 A: 直接调用 requests.get()
         if isinstance(node.func, ast.Attribute):
             path = self._get_full_name(node.func, symbol_table)
@@ -149,9 +145,7 @@ class ReachabilityAnalyzer:
         return None
 
     def _handle_getattr(self, node: ast.Call, symbol_table: dict[str, str]) -> str | None:
-        """
-        处理 getattr 调用
-        """
+        """处理 getattr 调用"""
         if len(node.args) < 2:
             return None
         obj_arg = node.args[0]

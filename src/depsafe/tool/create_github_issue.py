@@ -86,7 +86,7 @@ def create_github_issue(
     reachability: str,
     fix_suggestion: str | None = None,
     labels: list[str] | None = None,
-) -> dict:
+) -> IssueCreateResult:
     """
     在当前仓库创建安全修复 Issue。
 
@@ -100,23 +100,17 @@ def create_github_issue(
         labels: 额外标签（security 和 needs-manual-fix 会自动添加）
 
     Returns:
-        包含 Issue URL 和状态的字典
+        IssueCreateResult
     """
     # 1. 获取 GitHub Token
     token = os.getenv("GITHUB_TOKEN")
     if not token:
-        return {
-            "success": False,
-            "error": "GITHUB_TOKEN environment variable is not set",
-        }
+        return IssueCreateResult(success=False, error="GITHUB_TOKEN environment variable is not set")
     # 2. 解析仓库信息
     try:
         owner, repo = get_repo_info()
-    except RuntimeError as e:
-        return {
-            "success": False,
-            "error": str(e),
-        }
+    except Exception as e:
+        return IssueCreateResult(success=False, error=f"Failed to get repo info: {type(e).__name__}: {e}")
     # 3. 拼装 Issue body
     body = _build_issue_body(
         cve_id=cve_id,
@@ -143,16 +137,6 @@ def create_github_issue(
         response = requests.post(api_url, json=payload, headers=headers, timeout=30)
         response.raise_for_status()
         data = response.json()
-        return {
-            "success": True,
-            "issue_url": data["html_url"],
-            "issue_number": data["number"],
-        }
-    except requests.RequestException as e:
-        error_msg = str(e)
-        if hasattr(e, "response") and e.response is not None:
-            error_msg = f"HTTP {e.response.status_code}: {e.response.text}"
-        return {
-            "success": False,
-            "error": error_msg,
-        }
+        return IssueCreateResult(success=True, issue_url=data["html_url"], issue_number=data["number"])
+    except Exception as e:
+        return IssueCreateResult(success=False, error=f"{type(e).__name__}: {e}")
