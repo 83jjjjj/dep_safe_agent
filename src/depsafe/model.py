@@ -2,10 +2,10 @@ import json
 import logging
 
 import litellm
-from dep_safe_agent.src.depsafe.budget import TokenBudget
-from dep_safe_agent.src.depsafe.exceptions import FormatError
 from jinja2 import StrictUndefined, Template
 from pydantic import BaseModel
+
+from depsafe.exceptions import FormatError
 
 BASH_TOOL_SCHEMA = {
     "type": "function",
@@ -117,6 +117,12 @@ logger = logging.getLogger("litellm_model")
 
 
 class LitellmModel:
+    TOOL_INPUT_MODELS: dict[str, type[BaseModel]] = {
+        # "create_security_report": CreateSecurityReportInput,
+        # "create_github_pr": CreateGithubPrInput,
+        # "create_github_issue": CreateGithubIssueInput,
+    }
+
     def __init__(self, model_name: str, api_key: str):
         self.model_name = model_name
         self.api_key = api_key
@@ -126,7 +132,6 @@ class LitellmModel:
         messages: list[dict],
         response_format: type[BaseModel] | None = None,
         tools: list | None = None,
-        token_budget: TokenBudget | None = None,
     ) -> dict:
         # 与lm交互，获取ai_message，必须有tool_calls
         tools = tools if tools else [BASH_TOOL_SCHEMA, *CUSTOM_TOOLS_SCHEMA]
@@ -144,8 +149,6 @@ class LitellmModel:
         except litellm.exceptions.AuthenticationError as e:
             e.message += " You can permanently set your API key with `depsafe-extra config set KEY VALUE`."
             raise e
-        if token_budget and hasattr(response, "usage"):
-            token_budget.record(response.usage.prompt_tokens, response.usage.completion_tokens)
         cost = self._calculate_cost(response)
         try:
             actions = self._parse_actions(response)
@@ -156,7 +159,12 @@ class LitellmModel:
                 e.messages[0]["extra"]["response"] = repr(response)
             raise
         message = response.choices[0].message.model_dump()
-        message["extra"] = {"actions": actions, "cost": cost}
+        message["extra"] = {
+            "actions": actions,
+            "cost": cost,
+            "input_token": response.usage.prompt_tokens,
+            "output_token": response.usage.completion_tokens,
+        }
         return message
 
     def _calculate_cost(self, response) -> float:
@@ -173,6 +181,7 @@ class LitellmModel:
     def _parse_actions(self, response) -> list[dict]:
         """获取tool_calls转化为合法格式"""
         tool_calls = response.choices[0].message.tool_calls
+        # 协议校验
         if not tool_calls:
             raise FormatError(
                 {
@@ -185,6 +194,7 @@ class LitellmModel:
                     "extra": {"interrupt_type": "FormatError"},
                 }
             )
+        # json 语法校验
         actions = []
         for tool_call in tool_calls:
             try:
@@ -201,11 +211,21 @@ class LitellmModel:
                         "extra": {"interrupt_type": "FormatError"},
                     }
                 )
+            # Schema 语义校验
+            input_model = self.TOOL_INPUT_MODELS.get(tool_call.function.name)
+            validation_error = None
+            if input_model is not None:
+                try:
+                    validated = input_model(**args)
+                    args = validated.model_dump()
+                except Exception as e:
+                    validation_error = f"Parameter validation failed for '{tool_call.function.name}': {e}"
             actions.append(
                 {
                     "name": tool_call.function.name,
                     "arguments": args,
                     "tool_call_id": tool_call.id,
+                    "_validation_error": validation_error,
                 }
             )
         return actions
