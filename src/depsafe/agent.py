@@ -10,8 +10,8 @@ from jinja2 import StrictUndefined, Template
 from depsafe import package_dir
 from depsafe.budget import CostBudget, StepCounter, TokenBudget
 from depsafe.checkpointer import Trajectory
-from depsafe.docker import DockerEnvironment
-from depsafe.environment import LocalEnvironment
+from depsafe.environment.docker import DockerEnvironment
+from depsafe.environment.local import LocalEnvironment
 from depsafe.exceptions import FormatError, InterruptAgentFlow, LimitsExceeded
 from depsafe.model import LitellmModel
 from depsafe.tool.vuln_scanner import VulnBudget, VulnerabilityScanner
@@ -24,7 +24,8 @@ class DepSafeAgent:
         self.step_counter = StepCounter(step_limit=150)
         self.cost_budget = CostBudget(cost_limit=10.0)
         self.vuln_budget = VulnBudget(vuln_limit=5)
-        self.docker_env = DockerEnvironment(self.config, project_root)
+        self.project_root = Path.cwd().resolve()
+        self.docker_env = DockerEnvironment(self.config, self.project_root)
         self.local_env = LocalEnvironment(self.vuln_budget)
         self.vuln_scanner = VulnerabilityScanner(self.vuln_budget, self.local_env, self.docker_env)
         self.model = LitellmModel("deepseek/deepseek-v4-flash", os.getenv("DEEPSEEK_API_KEY"))
@@ -128,7 +129,7 @@ class DepSafeAgent:
         self.execute(ai_message)
 
     def query(self) -> dict:
-        if self.step_counter.is_exhausted() or self.token_budget.is_exhausted():
+        if self.step_counter.is_exhausted() or self.token_budget.is_exhausted() or self.cost_budget.is_exhausted():
             raise LimitsExceeded(
                 {
                     "role": "exit",
@@ -137,8 +138,11 @@ class DepSafeAgent:
                 }
             )
         self.step_counter.consume(1)
-        ai_message = self.model.query(self.messages, token_budget=self.token_budget)
+        ai_message = self.model.query(self.messages)
         self.cost_budget.consume(ai_message.get("extra", {}).get("cost", 0.0))
+        self.token_budget.record(
+            ai_message.get("extra", {}).get("input_token", 0.0), ai_message.get("extra", {}).get("output_token", 0.0)
+        )
         self.add_messages(ai_message)
         return ai_message
 
