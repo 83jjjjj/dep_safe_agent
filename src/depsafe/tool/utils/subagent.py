@@ -1,8 +1,8 @@
 import logging
 import traceback
 
-from depsafe.budget import StepCounter
-from depsafe.environment import LocalEnvironment
+from depsafe.budget import CostBudget, StepCounter
+from depsafe.environment.local import LocalEnvironment
 from depsafe.exceptions import (
     FormatError,
     InterruptAgentFlow,
@@ -30,11 +30,13 @@ class SubAgent:
         model: LitellmModel,
         env: LocalEnvironment,
         step_counter: StepCounter,
+        cost_budget: CostBudget,
         step_limit: int = 3,
     ):
         self.model = model
         self.env = env
         self.step_counter = step_counter
+        self.cost_budget = cost_budget
         self.step_limit = step_limit
         self.n_calls = 0
 
@@ -83,8 +85,7 @@ class SubAgent:
                 await self.step(tools)
                 self.n_consecutive_format_errors = 0
             except FormatError as e:
-                # The call was billed before parsing failed, so query() never got to charge it.
-                self.cost += e.messages[0].get("extra", {}).get("cost", 0.0)
+                self.cost_budget.consume(e.messages[0].get("extra", {}).get("cost", 0.0))
                 self.n_consecutive_format_errors += 1
                 if 0 < self.config.max_consecutive_format_errors <= self.n_consecutive_format_errors:
                     self.add_messages(
@@ -115,7 +116,7 @@ class SubAgent:
         await self.execute(ai_message)
 
     async def query(self, tools: list[dict]) -> dict:
-        if self.step_counter.is_exhausted() or 0 < self.step_limit <= self.max_steps:
+        if self.step_counter.is_exhausted() or 0 < self.step_limit <= self.max_steps or self.cost_budget.is_exhausted():
             raise LimitsExceeded(
                 {
                     "role": "exit",
@@ -125,6 +126,7 @@ class SubAgent:
                         "submissions": "",
                         "step_counter": self.step_counter.global_used(),
                         "n_calls": self.n_calls,
+                        "cost_budget": self.cost_budget.remaining(),
                     },
                 }
             )
@@ -135,6 +137,7 @@ class SubAgent:
             tools=tools,
             token_budget=None,
         )
+        self.cost_budget.consume(ai_message.get("extra", {}).get("cost", 0.0))
         self.add_messages(ai_message)
         return ai_message
 
