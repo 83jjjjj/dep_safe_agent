@@ -14,25 +14,23 @@ logger = logging.getLogger(__name__)
 
 
 class Vulnerability(BaseModel):
-    model_config = ConfigDict(frozen=True)  # 开启基于字段值的去重和哈希
-    pkg_name: str = Field(..., description="依赖包的名称")
+    model_config = ConfigDict(frozen=True)
+    pkg: str = Field(..., description="依赖包的名称")
+    cur_ver: str = Field(..., description="项目当前使用的依赖版本")
     cve_id: str = Field(..., description="漏洞的 CVE 编号")
     severity: str | None = Field(None, description="严重程度")
     fixed_ver: str | None = Field(None, description="修复该漏洞的版本")
     desc: str = Field("", description="漏洞描述")
 
 
-def check_cve(pkg: str, ver: str) -> list[Vulnerability]:
+def _query_osv(pkg: str, ver: str) -> list[Vulnerability]:
     """
-    查询指定包和版本的已知漏洞，使用OSV API
-
-    Args:
-        pkg: 依赖包的名称，例如 "requests" 或 "litellm"。
-        ver: 依赖包的精确版本号，例如 "2.25.1"。
+    通过 OSV API 查询指定包和版本的已知漏洞。
 
     Returns:
-        包含漏洞信息的 Vulnerability 对象列表。如果该版本没有已知漏洞，
-        或者 API 请求失败，则返回空列表。
+        漏洞列表。无结果时返回空列表。
+    Raises:
+        ConnectionError: API 请求失败时抛出，供调用方决定是否降级。
     """
     url = "https://api.osv.dev/v1/query"
     payload = {"package": {"name": pkg, "ecosystem": "PyPI"}, "version": ver}
@@ -42,7 +40,8 @@ def check_cve(pkg: str, ver: str) -> list[Vulnerability]:
         data = response.json()
     except Exception as e:
         raise ConnectionError(f"OSV API 查询失败 (pkg={pkg}, ver={ver}): {type(e).__name__}: {e}") from e
-    vulnerabilities = []
+
+    vulnerabilities: list[Vulnerability] = []
     for vuln in data.get("vulns", []):
         cve_id = next((alias for alias in vuln.get("aliases", []) if alias.startswith("CVE-")), vuln.get("id"))
         severity = None
@@ -57,22 +56,28 @@ def check_cve(pkg: str, ver: str) -> list[Vulnerability]:
         for affected in vuln.get("affected", []):
             for r in affected.get("ranges", []):
                 if r.get("type") == "ECOSYSTEM":
-                    events = r.get("events", [])
-                    for event in events:
+                    for event in r.get("events", []):
                         if "fixed" in event:
                             fixed_ver = event["fixed"]
                             break
         desc = vuln.get("summary", "") or vuln.get("details", "")
         try:
             vulnerabilities.append(
-                Vulnerability(pkg_name=pkg, cve_id=cve_id, severity=severity, fixed_ver=fixed_ver, desc=desc)
+                Vulnerability(
+                    pkg=pkg,
+                    cur_ver=ver,
+                    cve_id=cve_id,
+                    severity=severity,
+                    fixed_ver=fixed_ver,
+                    desc=desc,
+                )
             )
         except ValidationError as e:
             logger.warning(f"OSV 漏洞数据校验失败 (pkg={pkg}, cve={cve_id}): {e}")
-    return list(set(vulnerabilities))
+    return vulnerabilities
 
 
-def check_github_advisory(pkg: str, ver: str) -> list[Vulnerability]:
+def _check_github_advisory(pkg: str, ver: str) -> list[Vulnerability]:
     """
     查询 GitHub Advisory Database 获取漏洞信息 (作为 OSV 的 Fallback)
 
@@ -112,9 +117,10 @@ def check_github_advisory(pkg: str, ver: str) -> list[Vulnerability]:
         response.raise_for_status()
         data = response.json()
     except Exception as e:
-        print(f"请求 GitHub Advisory API 失败: {e}")
+        logger.warning(f"请求 GitHub Advisory API 失败: {e}")
         return []
-    vulnerabilities = []
+
+    vulnerabilities: list[Vulnerability] = []
     nodes = data.get("data", {}).get("securityVulnerabilities", {}).get("nodes", [])
     try:
         current_ver = Version(ver)
@@ -125,7 +131,6 @@ def check_github_advisory(pkg: str, ver: str) -> list[Vulnerability]:
         vuln_range_str = node.get("vulnerableVersionRange")
         if vuln_range_str:
             try:
-                # 跳过不受影响版本规则集合
                 spec = SpecifierSet(vuln_range_str)
                 if current_ver not in spec:
                     continue
@@ -138,7 +143,8 @@ def check_github_advisory(pkg: str, ver: str) -> list[Vulnerability]:
         try:
             vulnerabilities.append(
                 Vulnerability(
-                    pkg_name=pkg,
+                    pkg=pkg,
+                    cur_ver=ver,
                     cve_id=cve_id,
                     severity=advisory.get("severity"),
                     fixed_ver=fixed_ver,
@@ -148,3 +154,37 @@ def check_github_advisory(pkg: str, ver: str) -> list[Vulnerability]:
         except ValidationError as e:
             logger.warning(f"GitHub Advisory 数据校验失败 (pkg={pkg}): {e}")
     return vulnerabilities
+
+
+def check_cve(pkg: str, ver: str) -> list[Vulnerability]:
+    """
+    查询指定包和版本的已知漏洞。
+    优先使用 OSV API，若无结果或请求失败则降级到 GitHub Advisory Database。
+
+    Args:
+        pkg: 依赖包的名称，例如 "requests" 或 "litellm"。
+        ver: 依赖包的精确版本号，例如 "2.25.1"。
+
+    Returns:
+        去重后的漏洞列表。所有数据源均无结果或不可用时返回空列表。
+    """
+    vulnerabilities: list[Vulnerability] = []
+    try:
+        vulnerabilities = _query_osv(pkg, ver)
+    except ConnectionError as e:
+        logger.warning(f"{e}，将降级到 GitHub Advisory")
+    if not vulnerabilities:
+        logger.info(f"[降级] OSV 未返回有效结果 (pkg={pkg}, ver={ver})，尝试 GitHub Advisory")
+        try:
+            gh_vulns = _check_github_advisory(pkg, ver)
+            vulnerabilities.extend(gh_vulns)
+        except Exception as e:
+            logger.warning(f"GitHub Advisory 降级查询也失败 (pkg={pkg}, ver={ver}): {type(e).__name__}: {e}")
+    seen: set[tuple[str, str]] = set()
+    deduped: list[Vulnerability] = []
+    for v in vulnerabilities:
+        key = (v.pkg, v.cve_id)
+        if key not in seen:
+            seen.add(key)
+            deduped.append(v)
+    return deduped

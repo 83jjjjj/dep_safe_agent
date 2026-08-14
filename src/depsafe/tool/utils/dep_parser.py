@@ -1,6 +1,5 @@
 import subprocess
 import tempfile
-from enum import Enum
 from pathlib import Path
 
 import tomllib
@@ -9,18 +8,11 @@ from piptools.scripts.compile import cli as pip_compile_cli
 from pydantic import BaseModel
 
 
-class DepCategory(Enum):
-    PRODUCTION = "production"
-    DEV = "dev"
-    OPTIONAL = "optional"
-
-
 class Dependency(BaseModel):
-    name: str
-    version_spec: str  # ">=2.0.0"
+    pkg: str
+    ver: str
     marker: str | None  # environment marker
     source_file: str  # "pyproject.toml"
-    category: DepCategory
 
 
 def parse_deps(file_path: str) -> list[dict]:
@@ -100,14 +92,13 @@ def _parse_compiled_output(tmp_out_path: str, file_path: str) -> list[Dependency
                 line, marker = line.split(";", 1)
                 line, marker = line.strip(), marker.strip()
             if "==" in line:
-                name, version = line.split("==", 1)
+                pkg, version = line.split("==", 1)
                 resolved_deps.append(
                     Dependency(
-                        name=name.strip(),
-                        version_spec=f"=={version.strip()}",
+                        pkg=pkg.strip(),
+                        ver=version.strip(),
                         marker=marker,
                         source_file=file_path,
-                        category=DepCategory.PRODUCTION,
                     )
                 )
     return resolved_deps
@@ -134,11 +125,10 @@ def _parse_poetry_lock(lock_path: Path) -> list[Dependency]:
         if pkg.get("category", "main") == "main":
             deps.append(
                 Dependency(
-                    name=pkg["name"],
-                    version_spec=f"=={pkg['version']}",
+                    pkg=pkg["name"],
+                    ver=pkg["version"],
                     marker=None,
                     source_file=str(lock_path),
-                    category=DepCategory.PRODUCTION,
                 )
             )
     return deps
@@ -152,11 +142,10 @@ def _parse_uv_lock(lock_path: Path) -> list[Dependency]:
     for pkg in data.get("package", []):
         deps.append(
             Dependency(
-                name=pkg["name"],
-                version_spec=f"=={pkg['version']}",
+                pkg=pkg["name"],
+                ver=pkg["version"],
                 marker=None,
                 source_file=str(lock_path),
-                category=DepCategory.PRODUCTION,
             )
         )
     return deps
@@ -165,6 +154,7 @@ def _parse_uv_lock(lock_path: Path) -> list[Dependency]:
 def _parse_pipfile_lock(lock_path: Path) -> list[Dependency]:
     """解析 Pipfile.lock 文件"""
     import json
+
     with open(lock_path, encoding="utf-8") as f:
         data = json.load(f)
     deps = []
@@ -173,11 +163,10 @@ def _parse_pipfile_lock(lock_path: Path) -> list[Dependency]:
         if version:
             deps.append(
                 Dependency(
-                    name=pkg_name,
-                    version_spec=f"=={version}",
+                    pkg=pkg_name,
+                    ver=version,
                     marker=pkg_info.get("markers"),
                     source_file=str(lock_path),
-                    category=DepCategory.PRODUCTION,
                 )
             )
     return deps
