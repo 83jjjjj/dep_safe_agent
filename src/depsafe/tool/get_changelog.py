@@ -1,6 +1,9 @@
+from __future__ import annotations
+
 import os
 import re
 from collections.abc import AsyncGenerator
+from typing import TYPE_CHECKING
 
 import httpx
 from packaging.version import InvalidVersion
@@ -8,10 +11,13 @@ from packaging.version import parse as parse_version
 from pydantic import BaseModel, Field
 from tavily import TavilyClient
 
-from depsafe.budget import CostBudget, StepCounter
-from depsafe.environment.local import LocalEnvironment
-from depsafe.model import BASH_TOOL_SCHEMA, LitellmModel
+from depsafe.schemas import SUBMIT_RESULT_SCHEMA, WEB_SEARCH_SCHEMA
 from depsafe.tool.utils.subagent import SubAgent
+
+if TYPE_CHECKING:
+    from depsafe.budget import CostBudget, StepCounter
+    from depsafe.environment.local import LocalEnvironment
+    from depsafe.model import LitellmModel
 
 
 class Changelog(BaseModel):
@@ -63,38 +69,16 @@ async def _iter_github_releases(owner: str, repo: str, warnings: list[str]) -> A
             page += 1
 
 
-class GetChangelogInput(BaseModel):
-    pkg: str = Field(..., description="依赖包名称，例如 'requests' 或 'litellm'")
-    from_ver: str = Field(..., description="项目当前使用的依赖版本，例如 '2.25.1'")
-    to_ver: str = Field(..., description="目标修复版本，例如 '2.31.0'")
-
-
-_params = GetChangelogInput.model_json_schema()
-_params.pop("title", None)
-GET_CHANGELOG_SCHEMA = {
-    "type": "function",
-    "function": {
-        "name": "get_changelog",
-        "description": (
-            "获取指定 Python 包在两个版本之间的变更日志。"
-            "自动按 GitHub Releases → Raw Changelog 文件 → LLM 联网搜索 三级降级获取。"
-            "返回结构化的 Changelog 对象，包含每个版本的变更记录、来源及降级警告。"
-        ),
-        "parameters": _params,
-    },
-}
-
-
 class ChangelogOrchestrator:
     """编排器：统一管理降级逻辑"""
 
-    def __init__(self, model: LitellmModel, env: LocalEnvironment, step_counter: StepCounter):
+    def __init__(self, model: LitellmModel, env: LocalEnvironment, step_counter: StepCounter, cost_budget: CostBudget):
         self.step_counter = step_counter
         self.env = env
         self.env.local_tools["web_search"] = web_search
         self.env.local_tools["get_changelog"] = self.get_changelog
         self.raw_fetcher = RawFileFetcher()
-        self.llm_fallback = LLMSearchFallback(model, self.env, step_counter)
+        self.llm_fallback = LLMSearchFallback(model, self.env, step_counter, cost_budget)
 
     async def get_changelog(self, pkg: str, from_ver: str, to_ver: str) -> Changelog:
         """
@@ -257,22 +241,6 @@ class RawFileFetcher:
         return final_logs
 
 
-class WebSearchInput(BaseModel):
-    query: str = Field(..., description="搜索关键词，例如 'requests python package changelog 2.31.0'")
-
-
-_web_params = WebSearchInput.model_json_schema()
-_web_params.pop("title", None)
-WEB_SEARCH_TOOL_SCHEMA = {
-    "type": "function",
-    "function": {
-        "name": "web_search",
-        "description": "在互联网上搜索最新信息，输入搜索关键词，返回相关的网页标题和内容摘要。",
-        "parameters": _web_params,
-    },
-}
-
-
 def web_search(query: str) -> str:
     """
     在互联网上搜索最新信息。
@@ -291,62 +259,6 @@ def web_search(query: str) -> str:
         return f"搜索执行失败: {type(e).__name__}: {e}"
 
 
-SUBMIT_RESULT_TOOL_SCHEMA = {
-    "type": "function",
-    "function": {
-        "name": "submit_result",
-        "description": (
-            "提交最终结果并结束当前任务。"
-            "当你已经收集到足够信息、可以给出最终结论时，必须调用此工具。"
-            "调用此工具后，任务将立即终止。"
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "result": {
-                    "type": "object",
-                    "description": "任务的最终结果，结构化对象。",
-                    "properties": {
-                        "pkg_name": {
-                            "type": "string",
-                            "description": "依赖包的名称",
-                        },
-                        "changelogs": {
-                            "type": "array",
-                            "description": "from_ver和to_ver之间每个版本的changelog内容",
-                            "items": {
-                                "type": "object",
-                                "additionalProperties": {"type": "string"},
-                            },
-                        },
-                        "from_ver": {
-                            "type": "string",
-                            "description": "项目当前的依赖包版本",
-                        },
-                        "to_ver": {
-                            "type": "string",
-                            "description": "依赖包的第一个修复版本",
-                        },
-                        "source": {
-                            "type": "string",
-                            "description": "changelog来源",
-                        },
-                    },
-                    "required": [
-                        "pkg_name",
-                        "changelogs",
-                        "from_ver",
-                        "to_ver",
-                        "source",
-                    ],
-                }
-            },
-            "required": ["result"],
-        },
-    },
-}
-
-
 class LLMSearchFallback:
     def __init__(self, model: LitellmModel, env: LocalEnvironment, step_counter: StepCounter, cost_budget: CostBudget):
         self.model = model
@@ -355,7 +267,7 @@ class LLMSearchFallback:
         self.cost_budget = cost_budget
 
     async def search(self, pkg: str, from_ver: str, to_ver: str) -> Changelog:
-        tools = [WEB_SEARCH_TOOL_SCHEMA, BASH_TOOL_SCHEMA, SUBMIT_RESULT_TOOL_SCHEMA]
+        tools = [WEB_SEARCH_SCHEMA, SUBMIT_RESULT_SCHEMA]
         system_prompt = """\
 你是一个专业的软件供应链安全分析师。
 请通过调用工具获取信息，然后给出最终总结。

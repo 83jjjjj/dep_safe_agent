@@ -83,12 +83,6 @@ class VulnBudget:
         return budget
 
 
-class ScanVulnsInput(BaseModel):
-    dep_file_path: str = Field(
-        ..., description="依赖文件相对于项目根目录的路径，例如 'requirements.txt'、'pyproject.toml' 或 'Pipfile'。"
-    )
-
-
 class ScanVulnsResult(BaseModel):
     """漏洞扫描结果集，所有错误均通过字段结构化返回，不抛出异常"""
 
@@ -100,18 +94,6 @@ class ScanVulnsResult(BaseModel):
         default_factory=dict,
         description="CVE查询失败的依赖包及其原因。Key为'pkg==ver'，Value为具体的错误信息(exception_info)",
     )
-
-
-_params = ScanVulnsInput.model_json_schema()
-_params.pop("title", None)
-SCAN_VULNS_SCHEMA = {
-    "type": "function",
-    "function": {
-        "name": "scan_vulns",
-        "description": "扫描项目的依赖文件，查找已知漏洞（CVE）。返回本轮需要修复的漏洞列表，数量受系统预算控制。若返回空列表则表示无更多漏洞。",
-        "parameters": _params,
-    },
-}
 
 
 class VulnerabilityScanner:

@@ -8,7 +8,6 @@ from depsafe.tool.create_github_issue import create_github_issue
 from depsafe.tool.create_github_pr import create_github_pr
 from depsafe.tool.create_security_report import create_security_report
 from depsafe.tool.utils.cve_checker import check_cve
-from depsafe.tool.vuln_scanner import VulnBudget
 
 logger = logging.getLogger(__name__)
 
@@ -24,9 +23,6 @@ class LocalEnvironment:
         # "analyze_reachability": analyze_reachability,
         # "get_changelog": get_changelog,
     }
-
-    def __init__(self, vuln_budget: VulnBudget):
-        self.vuln_budget = vuln_budget
 
     def execute(self, action: dict) -> dict:
         tool_name = action.get("name", "")

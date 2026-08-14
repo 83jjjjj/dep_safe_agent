@@ -20,6 +20,7 @@ from depsafe.tool.vuln_scanner import VulnBudget, VulnerabilityScanner
 class DepSafeAgent:
     def __init__(self):
         self.config = yaml.safe_load(Path(package_dir / "config" / "default.yaml").read_text(encoding="utf-8"))["agent"]
+        self.model = LitellmModel("deepseek/deepseek-v4-flash", os.getenv("DEEPSEEK_API_KEY"))
         self.token_budget = TokenBudget(self.model.model_name, usage_ratio=0.7)
         self.step_counter = StepCounter(step_limit=150)
         self.cost_budget = CostBudget(cost_limit=10.0)
@@ -28,7 +29,6 @@ class DepSafeAgent:
         self.docker_env = DockerEnvironment(self.config, self.project_root)
         self.local_env = LocalEnvironment(self.vuln_budget)
         self.vuln_scanner = VulnerabilityScanner(self.vuln_budget, self.local_env, self.docker_env)
-        self.model = LitellmModel("deepseek/deepseek-v4-flash", os.getenv("DEEPSEEK_API_KEY"))
         self.trajectory = Trajectory()
         self.n_consecutive_format_errors = 0
         self.logger = logging.getLogger("agent")

@@ -1,37 +1,13 @@
 from pydantic import BaseModel, Field
 
+from depsafe.schemas import PriorityInput
+
 try:
     from cvss import CVSS3
 
     HAS_CVSS_LIB = True
 except ImportError:
     HAS_CVSS_LIB = False
-
-
-class PriorityInput(BaseModel):
-    cvss_vector: str | None = Field(
-        None, description="CVSS v3.1 向量字符串，如 'CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H'"
-    )
-    advisory_severity: str | None = Field(None, description="GitHub Advisory 返回的危害等级，如 'MODERATE'、'HIGH'")
-    reachability_confidence: str = Field(
-        ..., description="可达性分析置信度：'high'（静态确定调用）、'low'（动态调用）、'none'（未发现调用）"
-    )
-    has_breaking_change: bool = Field(..., description="修复版本的 changelog 中是否包含影响当前项目的破坏性变更")
-
-
-_priority_params = PriorityInput.model_json_schema()
-_priority_params.pop("title", None)
-ASSESS_PRIORITY_SCHEMA = {
-    "type": "function",
-    "function": {
-        "name": "assess_priority",
-        "description": (
-            "综合评估漏洞修复优先级。根据 CVSS 向量/公告严重性、可达性置信度、破坏性变更三个维度，"
-            "判定 P0-P4 优先级并给出标准化危害等级和判定理由。"
-        ),
-        "parameters": _priority_params,
-    },
-}
 
 
 class PriorityResult(BaseModel):

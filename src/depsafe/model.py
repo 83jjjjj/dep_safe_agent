@@ -6,58 +6,28 @@ from jinja2 import StrictUndefined, Template
 from pydantic import BaseModel
 
 from depsafe.exceptions import FormatError
-from depsafe.tool.apply_fix_and_verify import (
-    APPLY_FIX_AND_VERIFY_SCHEMA,
-    ApplyFixAndVerifyInput,
-)
-from depsafe.tool.assess_priority import (
-    ASSESS_PRIORITY_SCHEMA,
-    PriorityInput,
-)
-from depsafe.tool.create_github_issue import (
-    CREATE_GITHUB_ISSUE_SCHEMA,
-    CreateGithubIssueInput,
-)
-from depsafe.tool.create_github_pr import (
-    CREATE_GITHUB_PR_SCHEMA,
-    CreateGithubPrInput,
-)
-from depsafe.tool.create_security_report import (
-    CREATE_SECURITY_REPORT_SCHEMA,
-    CreateSecurityReportInput,
-)
-from depsafe.tool.get_changelog import (
-    GET_CHANGELOG_SCHEMA,
-    GetChangelogInput,
-)
-from depsafe.tool.reachability_analyzer import (
+from depsafe.schemas import (
     ANALYZE_REACHABILITY_SCHEMA,
-    AnalyzeReachabilityInput,
-)
-from depsafe.tool.vuln_scanner import (
+    APPLY_FIX_AND_VERIFY_SCHEMA,
+    ASSESS_PRIORITY_SCHEMA,
+    BASH_TOOL_SCHEMA,
+    CREATE_GITHUB_ISSUE_SCHEMA,
+    CREATE_GITHUB_PR_SCHEMA,
+    CREATE_SECURITY_REPORT_SCHEMA,
+    GET_CHANGELOG_SCHEMA,
     SCAN_VULNS_SCHEMA,
+    AnalyzeReachabilityInput,
+    ApplyFixAndVerifyInput,
+    CreateGithubIssueInput,
+    CreateGithubPrInput,
+    CreateSecurityReportInput,
+    GetChangelogInput,
+    PriorityInput,
     ScanVulnsInput,
 )
 
-BASH_TOOL_SCHEMA = {
-    "type": "function",
-    "function": {
-        "name": "bash",
-        "description": "Execute a bash command",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "command": {
-                    "type": "string",
-                    "description": "The bash command to execute",
-                }
-            },
-            "required": ["command"],
-        },
-    },
-}
-
-CUSTOM_TOOLS_SCHEMA = [
+TOOLS_SCHEMA = [
+    BASH_TOOL_SCHEMA,
     SCAN_VULNS_SCHEMA,
     GET_CHANGELOG_SCHEMA,
     ANALYZE_REACHABILITY_SCHEMA,
@@ -95,7 +65,7 @@ class LitellmModel:
         tools: list | None = None,
     ) -> dict:
         # 与lm交互，获取ai_message，必须有tool_calls
-        tools = tools if tools else [BASH_TOOL_SCHEMA, *CUSTOM_TOOLS_SCHEMA]
+        tools = tools if tools else TOOLS_SCHEMA
         completion_kwargs = {
             "model": self.model_name,
             "messages": messages,

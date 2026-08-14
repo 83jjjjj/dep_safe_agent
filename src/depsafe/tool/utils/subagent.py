@@ -1,14 +1,19 @@
+from __future__ import annotations
+
 import logging
 import traceback
+from typing import TYPE_CHECKING
 
-from depsafe.budget import CostBudget, StepCounter
-from depsafe.environment.local import LocalEnvironment
 from depsafe.exceptions import (
     FormatError,
     InterruptAgentFlow,
     LimitsExceeded,
 )
-from depsafe.model import LitellmModel
+
+if TYPE_CHECKING:
+    from depsafe.budget import CostBudget, StepCounter
+    from depsafe.environment.local import LocalEnvironment
+    from depsafe.model import LitellmModel
 
 logger = logging.getLogger(__name__)
 

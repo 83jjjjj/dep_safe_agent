@@ -6,31 +6,6 @@ from pydantic import BaseModel, Field
 from depsafe.tool.utils.github import get_repo_info
 
 
-class CreateGithubIssueInput(BaseModel):
-    title: str = Field(..., description="Issue 标题")
-    cve_id: str = Field(..., description="CVE 编号")
-    pkg_name: str = Field(..., description="受影响的包名")
-    priority: str = Field(..., description="漏洞优先级，如 P0 / P1 / P2")
-    reachability: str = Field(..., description="漏洞可达性置信度，如 high / low / none")
-    fix_suggestion: str | None = Field(None, description="修复建议（可选）")
-    labels: list[str] | None = Field(
-        None,
-        description="额外标签列表。'security' 和 'needs-manual-fix' 会自动添加，无需手动传入",
-    )
-
-
-_issue_params = CreateGithubIssueInput.model_json_schema()
-_issue_params.pop("title", None)
-CREATE_GITHUB_ISSUE_SCHEMA = {
-    "type": "function",
-    "function": {
-        "name": "create_github_issue",
-        "description": "在当前仓库创建安全修复 Issue。当自动修复均失败、需要人工介入时调用。",
-        "parameters": _issue_params,
-    },
-}
-
-
 class IssueCreateResult(BaseModel):
     """Issue 创建结果"""
 

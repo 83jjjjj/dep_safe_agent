@@ -312,30 +312,6 @@ def _run_tests() -> tuple[bool, str]:
     return False, "No test runner available (pytest/python)"
 
 
-class ApplyFixAndVerifyInput(BaseModel):
-    pkg_name: str = Field(..., description="待修复的包名，如 'requests'")
-    cve_id: str = Field(..., description="CVE 编号，如 'CVE-2024-1234'")
-    target_version: str = Field(..., description="目标修复版本，如 '2.3.1'")
-    module_name: str = Field(
-        ..., description="包的导入模块名。当包名与 import 名不一致时必填，如包名 'Pillow' 对应模块名 'PIL'"
-    )
-
-
-_fix_params = ApplyFixAndVerifyInput.model_json_schema()
-_fix_params.pop("title", None)
-APPLY_FIX_AND_VERIFY_SCHEMA = {
-    "type": "function",
-    "function": {
-        "name": "apply_fix_and_verify",
-        "description": (
-            "尝试将指定包升级到目标版本并进行完整验证（依赖文件更新 → 锁文件生成 → 隔离环境安装/import/pip check → 项目测试 → Git 推送）。"
-            "返回结构化的修复结果，包含成功状态、错误日志及建议的下一步操作。"
-        ),
-        "parameters": _fix_params,
-    },
-}
-
-
 def apply_fix_and_verify(
     pkg_name: str,
     cve_id: str,
