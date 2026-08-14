@@ -1,13 +1,13 @@
 import logging
 
+from pydantic_core import to_jsonable_python
+
 from depsafe.exceptions import Submitted
 from depsafe.tool.assess_priority import assess_priority
 from depsafe.tool.create_github_issue import create_github_issue
 from depsafe.tool.create_github_pr import create_github_pr
 from depsafe.tool.create_security_report import create_security_report
-from depsafe.tool.get_changelog import get_changelog
-from depsafe.tool.reachability_analyzer import analyze_reachability
-from depsafe.tool.utils.cve_checker import Vulnerability, check_cve
+from depsafe.tool.utils.cve_checker import check_cve
 from depsafe.tool.vuln_scanner import VulnBudget
 
 logger = logging.getLogger(__name__)
@@ -16,12 +16,13 @@ logger = logging.getLogger(__name__)
 class LocalEnvironment:
     TOOL_REGISTRY = {
         "check_cve": check_cve,
-        "analyze_reachability": analyze_reachability,
-        "get_changelog": get_changelog,
         "assess_priority": assess_priority,
         "create_github_issue": create_github_issue,
         "create_github_pr": create_github_pr,
         "create_security_report": create_security_report,
+        # 动态注册
+        # "analyze_reachability": analyze_reachability,
+        # "get_changelog": get_changelog,
     }
 
     def __init__(self, vuln_budget: VulnBudget):
@@ -49,12 +50,6 @@ class LocalEnvironment:
             )
         try:
             result = func(**args)
-            return {
-                "output": result,
-                "returncode": -1,
-                "exception_info": f"An error occurred while executing the {tool_name}: {e}",
-                "extra": {"exception_type": type(e).__name__, "exception": str(e)},
-            }
         except Exception as e:
             logger.warning(f"Local tool {tool_name} raised {type(e).__name__}: {e}")
             return {
@@ -63,3 +58,21 @@ class LocalEnvironment:
                 "exception_info": f"An error occurred while executing the {tool_name}: {e}",
                 "extra": {"exception_type": type(e).__name__, "exception": str(e)},
             }
+        try:
+            # 将任意类型包括原生类型 BaseModel 类型及嵌套类型，转为 jsonsafe dict
+            serialized = to_jsonable_python(result)
+        except (TypeError, ValueError, OverflowError) as e:
+            return {
+                "output": None,
+                "returncode": -1,
+                "exception_info": (f"Failed to serialize output of '{tool_name}': {type(e).__name__}: {e}"),
+                "extra": {
+                    "exception_type": "SerializationError",
+                    "exception": str(e),
+                },
+            }
+        return {
+            "output": serialized,
+            "returncode": 0,
+            "exception_info": "",
+        }
