@@ -63,6 +63,28 @@ async def _iter_github_releases(owner: str, repo: str, warnings: list[str]) -> A
             page += 1
 
 
+class GetChangelogInput(BaseModel):
+    pkg: str = Field(..., description="依赖包名称，例如 'requests' 或 'litellm'")
+    from_ver: str = Field(..., description="项目当前使用的依赖版本，例如 '2.25.1'")
+    to_ver: str = Field(..., description="目标修复版本，例如 '2.31.0'")
+
+
+_params = GetChangelogInput.model_json_schema()
+_params.pop("title", None)
+GET_CHANGELOG_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "get_changelog",
+        "description": (
+            "获取指定 Python 包在两个版本之间的变更日志。"
+            "自动按 GitHub Releases → Raw Changelog 文件 → LLM 联网搜索 三级降级获取。"
+            "返回结构化的 Changelog 对象，包含每个版本的变更记录、来源及降级警告。"
+        ),
+        "parameters": _params,
+    },
+}
+
+
 class ChangelogOrchestrator:
     """编排器：统一管理降级逻辑"""
 
@@ -110,7 +132,7 @@ class ChangelogOrchestrator:
             version_valid = False
         if owner and repo and version_valid:
             changelogs = []
-            async for rel in _iter_github_releases(owner, repo):
+            async for rel in _iter_github_releases(owner, repo, warnings):
                 ver_name = rel.get("tag_name", "").lstrip("v")
                 try:
                     cur_ver = parse_version(ver_name)
@@ -235,6 +257,22 @@ class RawFileFetcher:
         return final_logs
 
 
+class WebSearchInput(BaseModel):
+    query: str = Field(..., description="搜索关键词，例如 'requests python package changelog 2.31.0'")
+
+
+_web_params = WebSearchInput.model_json_schema()
+_web_params.pop("title", None)
+WEB_SEARCH_TOOL_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "web_search",
+        "description": "在互联网上搜索最新信息，输入搜索关键词，返回相关的网页标题和内容摘要。",
+        "parameters": _web_params,
+    },
+}
+
+
 def web_search(query: str) -> str:
     """
     在互联网上搜索最新信息。
@@ -251,25 +289,6 @@ def web_search(query: str) -> str:
         return "\n\n---\n\n".join(formatted_results)
     except Exception as e:
         return f"搜索执行失败: {type(e).__name__}: {e}"
-
-
-WEB_SEARCH_TOOL_SCHEMA = {
-    "type": "function",
-    "function": {
-        "name": "web_search",
-        "description": "在互联网上搜索最新信息，用于查找包的更新日志、安全公告等。",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "搜索关键词，例如 'requests python package changelog 2.31.0'",
-                }
-            },
-            "required": ["query"],
-        },
-    },
-}
 
 
 SUBMIT_RESULT_TOOL_SCHEMA = {
@@ -374,7 +393,10 @@ class LLMSearchFallback:
         result = await sub_agent.run(system_prompt, user_prompt, tools)
         warnings: list[str] = []
         if result.get("exit_status") == "Submitted":
-            return result["submission"]
+            try:
+                return Changelog(**result["submission"])
+            except Exception as e:
+                warnings.append(f"SubAgent 提交结果无法解析为 Changelog: {type(e).__name__}: {e}")
         warnings.append(f"LLM SubAgent 未能提交结果 (exit_status={result.get('exit_status')}), raw={result}")
         return Changelog(
             pkg_name=pkg,

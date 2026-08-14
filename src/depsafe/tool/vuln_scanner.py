@@ -7,23 +7,9 @@ from pydantic import BaseModel, Field
 from depsafe.environment.docker import DockerEnvironment
 from depsafe.environment.local import LocalEnvironment
 from depsafe.exceptions import Submitted
-from depsafe.tool.utils.cve_checker import Vulnerability, check_cve
-from depsafe.tool.utils.dep_parser import parse_deps
+from depsafe.tool.utils.cve_checker import Vulnerability
 
 logger = logging.getLogger(__name__)
-
-
-class ScanResult(BaseModel):
-    """漏洞扫描结果集，所有错误均通过字段结构化返回，不抛出异常"""
-
-    vulns: list[Vulnerability] = Field(default_factory=list, description="成功扫描出的漏洞列表")
-    parse_deps_error: str | None = Field(
-        None, description="依赖解析(parse_deps)阶段的错误信息。若不为None，说明解析失败，vulns可能为空"
-    )
-    failed_cves: dict[str, str] = Field(
-        default_factory=dict,
-        description="CVE查询失败的依赖包及其原因。Key为'pkg==ver'，Value为具体的错误信息(exception_info)",
-    )
 
 
 class VulnBudget:
@@ -49,8 +35,10 @@ class VulnBudget:
         self.found = len(batch)
         return batch
 
-    def record(self, vulns: list[Vulnerability]) -> list[Vulnerability]:
+    def record(self, vulns: list[Vulnerability] | list[dict]) -> list[Vulnerability]:
         """供 scanner 遍历依赖时逐个调用"""
+        if vulns and isinstance(vulns[0], dict):
+            vulns = [Vulnerability(**v) for v in vulns]
         vulns = self.filter_covered(vulns)
         remaining = self.vuln_limit - self.found
         if remaining <= 0:
@@ -81,7 +69,7 @@ class VulnBudget:
             "vuln_limit": self.vuln_limit,
             "found": self.found,
             "covered": [list(pair) for pair in self.covered],  # set→list
-            "overflow": [{"pkg": v.pkg, "cve_id": v.cve_id, "ver": v.ver} for v in self.overflow],
+            "overflow": [{"pkg": v.pkg, "cve_id": v.cve_id, "cur_ver": v.cur_ver} for v in self.overflow],
         }
 
     @classmethod
@@ -90,26 +78,38 @@ class VulnBudget:
         budget.found = data["found"]
         budget.covered = {tuple(pair) for pair in data["covered"]}  # list→set
         budget.overflow = [
-            Vulnerability(pkg_name=v["pkg"], cve_id=v["cve_id"], ver=v["ver"]) for v in data.get("overflow", [])
+            Vulnerability(pkg=v["pkg"], cve_id=v["cve_id"], cur_ver=v["cur_ver"]) for v in data.get("overflow", [])
         ]
         return budget
 
 
+class ScanVulnsInput(BaseModel):
+    dep_file_path: str = Field(
+        ..., description="依赖文件相对于项目根目录的路径，例如 'requirements.txt'、'pyproject.toml' 或 'Pipfile'。"
+    )
+
+
+class ScanVulnsResult(BaseModel):
+    """漏洞扫描结果集，所有错误均通过字段结构化返回，不抛出异常"""
+
+    vulns: list[Vulnerability] = Field(default_factory=list, description="成功扫描出的漏洞列表")
+    parse_deps_error: str | None = Field(
+        None, description="依赖解析(parse_deps)阶段的错误信息。若不为None，说明解析失败，vulns可能为空"
+    )
+    failed_cves: dict[str, str] = Field(
+        default_factory=dict,
+        description="CVE查询失败的依赖包及其原因。Key为'pkg==ver'，Value为具体的错误信息(exception_info)",
+    )
+
+
+_params = ScanVulnsInput.model_json_schema()
+_params.pop("title", None)
 SCAN_VULNS_SCHEMA = {
     "type": "function",
     "function": {
         "name": "scan_vulns",
         "description": "扫描项目的依赖文件，查找已知漏洞（CVE）。返回本轮需要修复的漏洞列表，数量受系统预算控制。若返回空列表则表示无更多漏洞。",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "dep_file_path": {
-                    "type": "string",
-                    "description": "依赖文件相对于项目根目录的路径，例如 'requirements.txt'、'pyproject.toml' 或 'Pipfile'。",
-                }
-            },
-            "required": ["dep_file_path"],
-        },
+        "parameters": _params,
     },
 }
 
@@ -120,22 +120,24 @@ class VulnerabilityScanner:
         self.local_env = local_env
         self.budget = budget
 
-    def scan_vulns(self, dep_file_path: str) -> list[Vulnerability]:
+    def scan_vulns(self, dep_file_path: str) -> ScanVulnsResult:
         """
         扫描依赖文件，返回本轮要修复的漏洞，数量控制在 vuln_limit 以内。
 
         Args:
-            dep_file_path: 依赖文件路径，支持 requirements.txt、
-                pyproject.toml、Pipfile 等格式。
+            dep_file_path: 依赖文件路径，支持 requirements.txt、pyproject.toml、Pipfile 等格式。
 
         Returns:
-            本轮需要修复的漏洞列表，数量不超过 budget.vuln_limit。
-            若所有依赖均已修复且 overflow 为空，则返回空列表。
+            ScanVulnsResult 对象，包含以下字段：
+                - vulns: 本轮需要修复的漏洞列表，数量不超过 budget.vuln_limit。
+                若所有依赖均已修复且 overflow 为空，则为空列表。
+                - parse_deps_error: 依赖解析失败时的错误信息，成功时为 None。
+                - failed_cves: CVE 查询失败的依赖包及其原因，Key 为 'pkg==ver'。
         """
         self.budget.reset_found()
         batch = self.budget._consume_overflow()
         if self.budget.exhausted:
-            return batch
+            return ScanVulnsResult(vulns=batch)
         logger.info(f"[Docker] 解析依赖: {dep_file_path}")
         try:
             result = self.docker_env.execute({"name": "parse_deps", "arguments": {"dep_file_path": dep_file_path}})
@@ -143,7 +145,7 @@ class VulnerabilityScanner:
             raise
         if result["returncode"] != 0:
             logger.warning(f"parse_deps 失败: {result['exception_info']}")
-            return ScanResult(vulns=batch, parse_deps_error=result["exception_info"])
+            return ScanVulnsResult(vulns=batch, parse_deps_error=result["exception_info"])
         failed_cves: dict[str, str] = {}
         for dep in result["output"]:
             if self.budget.exhausted:
@@ -157,4 +159,4 @@ class VulnerabilityScanner:
                 continue
             accepted = self.budget.record(result["output"])
             batch.extend(accepted)
-        return ScanResult(vulns=batch, failed_cves=failed_cves)
+        return ScanVulnsResult(vulns=batch, failed_cves=failed_cves)

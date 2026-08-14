@@ -5,45 +5,33 @@ from pydantic import BaseModel, Field
 
 from depsafe.tool.utils.github import get_repo_info
 
+
+class CreateGithubPrInput(BaseModel):
+    title: str = Field(..., description="PR 标题")
+    head_branch: str = Field(..., description="修复所在的源分支，如 'fix/security-update-requests-CVE-2024-1234'")
+    base_branch: str = Field(..., description="目标合并分支，如 'main' 或 'develop'")
+    cve_id: str = Field(..., description="CVE 编号")
+    pkg_name: str = Field(..., description="受影响的包名")
+    old_version: str = Field(..., description="升级前的版本号")
+    new_version: str = Field(..., description="升级后的版本号")
+    priority: str = Field(..., description="漏洞优先级：P0 / P1 / P2")
+    reason: str = Field(..., description="优先级判定理由")
+    reachability: str = Field(..., description="漏洞可达性置信度")
+    test_skipped: bool = Field(..., description="是否跳过了自动化测试")
+    breaking_changes: list[str] | None = Field(None, description="破坏性变更列表。仅当 priority 为 P1 时传入，P0/P2 可省略")
+
+
+_pr_params = CreateGithubPrInput.model_json_schema()
+_pr_params.pop("title", None)
 CREATE_GITHUB_PR_SCHEMA = {
     "type": "function",
     "function": {
         "name": "create_github_pr",
-        "description": "在修复验证成功后，创建安全修复 Pull Request。",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "title": {"type": "string", "description": "PR 标题"},
-                "head_branch": {"type": "string", "description": "修复所在的源分支（如 fix/cve-2023-xxxx）"},
-                "base_branch": {"type": "string", "description": "目标合并分支（如 main 或 develop）"},
-                "cve_id": {"type": "string", "description": "CVE 编号"},
-                "pkg_name": {"type": "string", "description": "受影响的包名"},
-                "old_version": {"type": "string", "description": "升级前的版本号"},
-                "new_version": {"type": "string", "description": "升级后的版本号"},
-                "priority": {"type": "string", "description": "P0 / P1 / P2"},
-                "reason": {"type": "string", "description": "优先级判定理由"},
-                "reachability": {"type": "string", "description": "漏洞可达性置信度"},
-                "test_skipped": {"type": "boolean", "description": "是否跳过了自动化测试"},
-                "breaking_changes": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "破坏性变更列表（P1 时传入）",
-                },
-            },
-            "required": [
-                "title",
-                "head_branch",
-                "base_branch",
-                "cve_id",
-                "pkg_name",
-                "old_version",
-                "new_version",
-                "priority",
-                "reason",
-                "reachability",
-                "test_skipped",
-            ],
-        },
+        "description": (
+            "在修复验证成功后创建安全修复 Pull Request。"
+            "P0 自动开启 Auto-merge，P1 创建 Draft PR 并标记 needs-review，P2 创建普通 PR。"
+        ),
+        "parameters": _pr_params,
     },
 }
 

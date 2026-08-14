@@ -36,7 +36,7 @@ CREATE_SECURITY_REPORT_SCHEMA = {
 }
 
 
-class ReportCreateResult(BaseModel):
+class CreateSecurityReportResult(BaseModel):
     """安全修复报告创建结果"""
 
     success: bool = Field(..., description="报告是否成功写入")
@@ -113,7 +113,7 @@ def create_security_report(
     cve_id: str,
     priority: str,
     reachability: str,
-    attempts: list[dict],
+    attempts: list[AttemptRecord],
     fix_suggestion: str | None = None,
 ) -> dict:
     """
@@ -124,7 +124,7 @@ def create_security_report(
         cve_id: CVE 编号
         priority: 漏洞优先级
         reachability: 漏洞可达性
-        attempts: 所有修复尝试的结果列表（FixAttemptResult 的 dict 形式）
+        attempts: 所有修复尝试的结果列表（FixAttemptResult 形式）
         fix_suggestion: 修复建议
 
     Returns:
@@ -132,17 +132,13 @@ def create_security_report(
     """
     report_path = Path("SECURITY_FIX_REPORT.md")
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    try:
-        parsed_attempts = [AttemptRecord(**a) for a in attempts]
-    except Exception as e:
-        return {"success": False, "error": f"Failed to parse attempts: {type(e).__name__}: {e}"}
     section = _build_report_section(
         pkg_name=pkg_name,
         cve_id=cve_id,
         priority=priority,
         reachability=reachability,
         fix_suggestion=fix_suggestion,
-        attempts=parsed_attempts,
+        attempts=attempts,
         timestamp=timestamp,
     )
     if not report_path.exists():

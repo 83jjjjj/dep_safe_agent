@@ -6,6 +6,38 @@ from jinja2 import StrictUndefined, Template
 from pydantic import BaseModel
 
 from depsafe.exceptions import FormatError
+from depsafe.tool.apply_fix_and_verify import (
+    APPLY_FIX_AND_VERIFY_SCHEMA,
+    ApplyFixAndVerifyInput,
+)
+from depsafe.tool.assess_priority import (
+    ASSESS_PRIORITY_SCHEMA,
+    PriorityInput,
+)
+from depsafe.tool.create_github_issue import (
+    CREATE_GITHUB_ISSUE_SCHEMA,
+    CreateGithubIssueInput,
+)
+from depsafe.tool.create_github_pr import (
+    CREATE_GITHUB_PR_SCHEMA,
+    CreateGithubPrInput,
+)
+from depsafe.tool.create_security_report import (
+    CREATE_SECURITY_REPORT_SCHEMA,
+    CreateSecurityReportInput,
+)
+from depsafe.tool.get_changelog import (
+    GET_CHANGELOG_SCHEMA,
+    GetChangelogInput,
+)
+from depsafe.tool.reachability_analyzer import (
+    ANALYZE_REACHABILITY_SCHEMA,
+    AnalyzeReachabilityInput,
+)
+from depsafe.tool.vuln_scanner import (
+    SCAN_VULNS_SCHEMA,
+    ScanVulnsInput,
+)
 
 BASH_TOOL_SCHEMA = {
     "type": "function",
@@ -26,101 +58,30 @@ BASH_TOOL_SCHEMA = {
 }
 
 CUSTOM_TOOLS_SCHEMA = [
-    {
-        "type": "function",
-        "function": {
-            "name": "check_github_advisory",
-            "description": "查询 GitHub Advisory Database 获取漏洞信息，通常作为 OSV API 的 Fallback（兜底）数据源。如果该版本没有已知漏洞或 API 请求失败，则返回空列表。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "pkg": {
-                        "type": "string",
-                        "description": "依赖包的名称，例如 'requests' 或 'litellm'。",
-                    },
-                    "ver": {"type": "string", "description": "依赖包的精确版本号，例如 '2.25.1'。"},
-                },
-                "required": ["pkg", "ver"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_changelog",
-            "description": "获取指定包在两个版本之间的变更日志。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "pkg": {"type": "string", "description": "依赖包名称"},
-                    "from_ver": {"type": "string", "description": "要查询变更日志的起始版本"},
-                    "to_ver": {"type": "string", "description": "要查询变更日志的目标版本"},
-                },
-                "required": ["pkg", "from_ver", "to_ver"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "analyze_reachability",
-            "description": "分析代码文件中对特定危险函数的调用情况，用于安全审计。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "file_path": {
-                        "type": "string",
-                        "description": "需要分析的代码文件的路径，例如 'app.py'",
-                    },
-                    "target_functions": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "需要追踪的目标函数列表，例如 ['requests.get', 'os.system']",
-                    },
-                },
-                "required": ["file_path", "target_functions"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "assess_priority",
-            "description": "评估漏洞修复的优先级。根据 CVSS 向量或公告严重性、可达性置信度以及是否存在破坏性变更，综合判定漏洞修复的优先级（P0-P4）并给出修复建议理由。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "cvss_vector": {
-                        "type": "string",
-                        "description": "CVSS 向量字符串，用于解析严重性",
-                    },
-                    "advisory_severity": {
-                        "type": "string",
-                        "description": "安全公告中的严重性级别，如 CRITICAL, HIGH, MEDIUM, LOW",
-                    },
-                    "reachability_confidence": {
-                        "type": "string",
-                        "description": "漏洞可达性置信度，可选值：NONE, LOW, MEDIUM, HIGH",
-                    },
-                    "has_breaking_change": {
-                        "type": "boolean",
-                        "description": "修复版本是否包含破坏性变更",
-                    },
-                },
-                "required": ["reachability_confidence", "has_breaking_change"],
-            },
-        },
-    },
+    SCAN_VULNS_SCHEMA,
+    GET_CHANGELOG_SCHEMA,
+    ANALYZE_REACHABILITY_SCHEMA,
+    ASSESS_PRIORITY_SCHEMA,
+    APPLY_FIX_AND_VERIFY_SCHEMA,
+    CREATE_GITHUB_ISSUE_SCHEMA,
+    CREATE_GITHUB_PR_SCHEMA,
+    CREATE_SECURITY_REPORT_SCHEMA,
 ]
+
 
 logger = logging.getLogger("litellm_model")
 
 
 class LitellmModel:
     TOOL_INPUT_MODELS: dict[str, type[BaseModel]] = {
-        # "create_security_report": CreateSecurityReportInput,
-        # "create_github_pr": CreateGithubPrInput,
-        # "create_github_issue": CreateGithubIssueInput,
+        "scan_vulns": ScanVulnsInput,
+        "get_changelog": GetChangelogInput,
+        "analyze_reachability": AnalyzeReachabilityInput,
+        "assess_priority": PriorityInput,
+        "apply_fix_and_verify": ApplyFixAndVerifyInput,
+        "create_github_issue": CreateGithubIssueInput,
+        "create_github_pr": CreateGithubPrInput,
+        "create_security_report": CreateSecurityReportInput,
     }
 
     def __init__(self, model_name: str, api_key: str):
@@ -213,19 +174,39 @@ class LitellmModel:
                 )
             # Schema 语义校验
             input_model = self.TOOL_INPUT_MODELS.get(tool_call.function.name)
-            validation_error = None
-            if input_model is not None:
-                try:
-                    validated = input_model(**args)
-                    args = validated.model_dump()
-                except Exception as e:
-                    validation_error = f"Parameter validation failed for '{tool_call.function.name}': {e}"
+            if input_model is None:
+                raise FormatError(
+                    {
+                        "role": "user",
+                        "content": Template("{{ error }}", undefined=StrictUndefined).render(
+                            error="No tool input model found.",
+                            actions=[],
+                            has_tool_calls=False,
+                        ),
+                        "extra": {"interrupt_type": "FormatError"},
+                    }
+                )
+            try:
+                validated = input_model(**args)
+                args = validated.model_dump()
+            except Exception as e:
+                validation_error = f"Parameter validation failed for '{tool_call.function.name}': {e}"
+                raise FormatError(
+                    {
+                        "role": "user",
+                        "content": Template("{{ error }}", undefined=StrictUndefined).render(
+                            error=f"Error parsing tool call arguments: {e}.",
+                            actions=[],
+                            has_tool_calls=False,
+                        ),
+                        "extra": {"interrupt_type": "FormatError", "validation_error": validation_error},
+                    }
+                )
             actions.append(
                 {
                     "name": tool_call.function.name,
                     "arguments": args,
                     "tool_call_id": tool_call.id,
-                    "_validation_error": validation_error,
                 }
             )
         return actions

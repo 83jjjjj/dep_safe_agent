@@ -16,6 +16,28 @@ class CallEvidence(BaseModel):
     resolved_path: str = Field(..., description="解析路径")
 
 
+class AnalyzeReachabilityInput(BaseModel):
+    file_path: str = Field(..., description="待分析的代码文件路径，例如 'src/main.py'")
+    target_functions: list[str] = Field(
+        ...,
+        description="需要追踪的目标函数完整路径列表，例如 ['requests.get', 'os.system']",
+    )
+
+
+_reach_params = AnalyzeReachabilityInput.model_json_schema()
+_reach_params.pop("title", None)
+ANALYZE_REACHABILITY_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "analyze_reachability",
+        "description": (
+            "基于 AST 静态分析指定文件中对目标函数的调用可达性。返回调用证据列表（含行号、代码片段、置信度）及分析错误信息。"
+        ),
+        "parameters": _reach_params,
+    },
+}
+
+
 class ReachabilityResult(BaseModel):
     """可达性分析结果"""
 
@@ -94,12 +116,7 @@ class ReachabilityAnalyzer:
                                 symbol_table[target.id] = value_path
 
     def _scan_calls(
-        self,
-        target_functions: set[str],
-        tree: ast.AST,
-        symbol_table: dict[str, str],
-        file_path: str,
-        lines: list[str]
+        self, target_functions: set[str], tree: ast.AST, symbol_table: dict[str, str], file_path: str, lines: list[str]
     ) -> list[CallEvidence]:
         """第二遍扫描：查找 Call 节点并验证"""
         evidences = []

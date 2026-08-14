@@ -19,6 +19,21 @@ class PriorityInput(BaseModel):
     has_breaking_change: bool = Field(..., description="修复版本的 changelog 中是否包含影响当前项目的破坏性变更")
 
 
+_priority_params = PriorityInput.model_json_schema()
+_priority_params.pop("title", None)
+ASSESS_PRIORITY_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "assess_priority",
+        "description": (
+            "综合评估漏洞修复优先级。根据 CVSS 向量/公告严重性、可达性置信度、破坏性变更三个维度，"
+            "判定 P0-P4 优先级并给出标准化危害等级和判定理由。"
+        ),
+        "parameters": _priority_params,
+    },
+}
+
+
 class PriorityResult(BaseModel):
     priority: str = Field(..., description="最终优先级：P0(紧急) / P1(高) / P2(中) / P3(低) / P4(建议)")
     severity: str = Field(..., description="标准化后的漏洞危害等级：CRITICAL / HIGH / MODERATE / LOW")
