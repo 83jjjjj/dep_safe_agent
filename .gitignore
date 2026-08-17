@@ -1,9 +1,27 @@
+# Python
 __pycache__/
 *.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
 .venv/
 venv/
+
+# Environment & Secrets
 .env
-dist/
-*.egg-info/
+.env.*
+
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# DepSafe Agent 运行时产物
 trajectories/
 reports/
+*.log
+
+# Eval Fixtures 的 Git 状态（fixture 以纯文件形式纳入版本管理）
+tests/fixtures/*/.git/

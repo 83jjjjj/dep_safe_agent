@@ -18,6 +18,7 @@ from depsafe.schemas import (
     SCAN_VULNS_SCHEMA,
     AnalyzeReachabilityInput,
     ApplyFixAndVerifyInput,
+    BashInput,
     CreateGithubIssueInput,
     CreateGithubPrInput,
     CreateSecurityReportInput,
@@ -44,6 +45,7 @@ logger = logging.getLogger("litellm_model")
 
 class LitellmModel:
     TOOL_INPUT_MODELS: dict[str, type[BaseModel]] = {
+        "bash": BashInput,
         "scan_vulns": ScanVulnsInput,
         "get_changelog": GetChangelogInput,
         "analyze_reachability": AnalyzeReachabilityInput,
@@ -58,7 +60,7 @@ class LitellmModel:
         self.model_name = model_name
         self.api_key = api_key
 
-    async def query(
+    def query(
         self,
         messages: list[dict],
         response_format: type[BaseModel] | None = None,
@@ -76,7 +78,7 @@ class LitellmModel:
         if response_format:
             completion_kwargs["response_format"] = response_format
         try:
-            response = await litellm.acompletion(**completion_kwargs)
+            response = litellm.completion(**completion_kwargs)
         except litellm.exceptions.AuthenticationError as e:
             e.message += " You can permanently set your API key with `depsafe-extra config set KEY VALUE`."
             raise e
@@ -180,6 +182,12 @@ class LitellmModel:
                 }
             )
         return actions
+
+    def format_message(self, role: str, content: str, extra: dict | None = None) -> dict:
+        msg = {"role": role, "content": content}
+        if extra is not None:
+            msg["extra"] = extra
+        return msg
 
     def _format_toolcall_observation_results(self, message: dict, outputs: list[dict]) -> list[dict]:
         # 将工具结果outputs转化为合法格式

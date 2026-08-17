@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import re
-from collections.abc import AsyncGenerator
+from collections.abc import Generator
 from typing import TYPE_CHECKING
 
 import httpx
@@ -29,12 +29,12 @@ class Changelog(BaseModel):
     warnings: list[str] = Field(default_factory=list, description="降级过程中的警告信息，记录了哪些步骤失败以及原因")
 
 
-async def _get_pypi_source_url(pkg: str) -> tuple[str | None, str | None]:
+def _get_pypi_source_url(pkg: str) -> tuple[str | None, str | None]:
     """调 PyPI JSON API，返回 (Source repo URL, error_msg)"""
     pypi_url = f"https://pypi.org/pypi/{pkg}/json"
-    async with httpx.AsyncClient() as client:
+    with httpx.Client() as client:
         try:
-            response = await client.get(pypi_url)
+            response = client.get(pypi_url)
             response.raise_for_status()
             data = response.json()
             project_urls = data.get("info", {}).get("project_urls", {})
@@ -43,7 +43,7 @@ async def _get_pypi_source_url(pkg: str) -> tuple[str | None, str | None]:
             return None, f"{type(e).__name__}: {e}"
 
 
-async def _iter_github_releases(owner: str, repo: str, warnings: list[str]) -> AsyncGenerator[dict, None]:
+def _iter_github_releases(owner: str, repo: str, warnings: list[str]) -> Generator[dict, None]:
     """调 GitHub Releases API，逐个返回 release。错误写入 warnings。"""
     headers = {"Accept": "application/vnd.github.v3+json"}
     token = os.getenv("GITHUB_TOKEN")
@@ -53,10 +53,10 @@ async def _iter_github_releases(owner: str, repo: str, warnings: list[str]) -> A
         warnings.append("未找到 GITHUB_TOKEN，将使用未认证请求（限流严格）")
     github_api_url = f"https://api.github.com/repos/{owner}/{repo}/releases"
     page = 1
-    async with httpx.AsyncClient(headers=headers) as client:
+    with httpx.Client(headers=headers) as client:
         while True:
             try:
-                response = await client.get(github_api_url, params={"page": page, "per_page": 100})
+                response = client.get(github_api_url, params={"page": page, "per_page": 100})
                 response.raise_for_status()
                 releases = response.json()
             except Exception as e:
@@ -64,8 +64,7 @@ async def _iter_github_releases(owner: str, repo: str, warnings: list[str]) -> A
                 break
             if not releases:
                 break
-            for rel in releases:
-                yield rel
+            yield from releases
             page += 1
 
 
@@ -80,7 +79,7 @@ class ChangelogOrchestrator:
         self.raw_fetcher = RawFileFetcher()
         self.llm_fallback = LLMSearchFallback(model, self.env, step_counter, cost_budget)
 
-    async def get_changelog(self, pkg: str, from_ver: str, to_ver: str) -> Changelog:
+    def get_changelog(self, pkg: str, from_ver: str, to_ver: str) -> Changelog:
         """
         获取指定包在两个版本之间的变更日志
 
@@ -94,7 +93,7 @@ class ChangelogOrchestrator:
         """
         warnings: list[str] = []
         # 通过pypi拿到repo链接
-        repo_url, pypi_err = await _get_pypi_source_url(pkg)
+        repo_url, pypi_err = _get_pypi_source_url(pkg)
         if not repo_url:
             warnings.append(f"PyPI 未找到 {pkg} 的 GitHub 仓库链接: {pypi_err or '无 Source URL'}")
         owner, repo = None, None
@@ -116,7 +115,7 @@ class ChangelogOrchestrator:
             version_valid = False
         if owner and repo and version_valid:
             changelogs = []
-            async for rel in _iter_github_releases(owner, repo, warnings):
+            for rel in _iter_github_releases(owner, repo, warnings):
                 ver_name = rel.get("tag_name", "").lstrip("v")
                 try:
                     cur_ver = parse_version(ver_name)
@@ -139,15 +138,15 @@ class ChangelogOrchestrator:
                 )
         if owner and repo:
             warnings.append("[降级] GitHub Releases 未找到，尝试探测 Raw 文件...")
-            raw_result, raw_warnings = await self.raw_fetcher.fetch(owner, repo, from_ver, to_ver)
+            raw_result, raw_warnings = self.raw_fetcher.fetch(owner, repo, from_ver, to_ver)
             warnings.extend(raw_warnings)
             if raw_result:
                 raw_result.warnings = warnings
                 return raw_result
         warnings.append("[降级] Raw 文件未找到，启动 LLM 自主搜索...")
-        llm_result = await self.llm_fallback.search(pkg, from_ver, to_ver)
+        llm_result = self.llm_fallback.search(pkg, from_ver, to_ver)
         llm_result.warnings = warnings + llm_result.warnings
-        return await llm_result
+        return llm_result
 
 
 class RawFileFetcher:
@@ -156,16 +155,16 @@ class RawFileFetcher:
     # 候选文件名优先级队列
     CANDIDATES = ["CHANGELOG.md", "CHANGES.md", "HISTORY.md"]
 
-    async def fetch(self, owner: str, repo: str, from_ver: str, to_ver: str) -> tuple["Changelog | None", list[str]]:
+    def fetch(self, owner: str, repo: str, from_ver: str, to_ver: str) -> tuple["Changelog | None", list[str]]:
         """并发探测候选文件，收到 200 再下载内容。返回 (Changelog | None, warnings)。"""
         warnings: list[str] = []
         base_raw_url = f"https://raw.githubusercontent.com/{owner}/{repo}/main"
-        async with httpx.AsyncClient() as client:
+        with httpx.Client() as client:
             for filename in self.CANDIDATES:
                 url = f"{base_raw_url}/{filename}"
                 # 直接在此处进行 HEAD 检查，避免重复创建 client
                 try:
-                    head_resp = await client.head(url, follow_redirects=True, timeout=10.0)
+                    head_resp = client.head(url, follow_redirects=True, timeout=10.0)
                     if head_resp.status_code != 200:
                         continue
                 except Exception as e:
@@ -173,7 +172,7 @@ class RawFileFetcher:
                     continue
                 # 存在则下载内容
                 try:
-                    get_resp = await client.get(url, follow_redirects=True, timeout=15.0)
+                    get_resp = client.get(url, follow_redirects=True, timeout=15.0)
                     get_resp.raise_for_status()
                     content = get_resp.text
                     parsed_logs = self._parse_markdown_changelog(content, from_ver, to_ver)
@@ -266,7 +265,7 @@ class LLMSearchFallback:
         self.step_counter = step_counter
         self.cost_budget = cost_budget
 
-    async def search(self, pkg: str, from_ver: str, to_ver: str) -> Changelog:
+    def search(self, pkg: str, from_ver: str, to_ver: str) -> Changelog:
         tools = [WEB_SEARCH_SCHEMA, SUBMIT_RESULT_SCHEMA]
         system_prompt = """\
 你是一个专业的软件供应链安全分析师。
@@ -302,7 +301,7 @@ class LLMSearchFallback:
             cost_budget=self.cost_budget,
             max_steps=5,
         )
-        result = await sub_agent.run(system_prompt, user_prompt, tools)
+        result = sub_agent.run(system_prompt, user_prompt, tools)
         warnings: list[str] = []
         if result.get("exit_status") == "Submitted":
             try:

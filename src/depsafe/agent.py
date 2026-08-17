@@ -27,11 +27,21 @@ class DepSafeAgent:
         self.vuln_budget = VulnBudget(vuln_limit=5)
         self.project_root = Path.cwd().resolve()
         self.docker_env = DockerEnvironment(self.config, self.project_root)
-        self.local_env = LocalEnvironment(self.vuln_budget)
+        self.local_env = LocalEnvironment()
         self.vuln_scanner = VulnerabilityScanner(self.vuln_budget, self.local_env, self.docker_env)
         self.trajectory = Trajectory()
         self.n_consecutive_format_errors = 0
         self.logger = logging.getLogger("agent")
+
+    def get_template_vars(self) -> dict:
+        vars_dict = {
+            "system": self.config.get("system", ""),
+            "release": self.config.get("release", ""),
+            "version": self.config.get("version", ""),
+            "machine": self.config.get("machine", ""),
+            "task": self.config.get("task", ""),
+        }
+        return vars_dict
 
     def _render_template(self, template: str) -> str:
         return Template(template, undefined=StrictUndefined).render(**self.get_template_vars())
@@ -96,7 +106,7 @@ class DepSafeAgent:
                 except FormatError as e:
                     self.cost_budget.consume(e.messages[0].get("extra", {}).get("cost", 0.0))
                     self.n_consecutive_format_errors += 1
-                    if 0 < self.config.max_consecutive_format_errors <= self.n_consecutive_format_errors:
+                    if 0 < self.config.get("max_consecutive_format_errors", 3) <= self.n_consecutive_format_errors:
                         self.add_messages(
                             *e.messages,
                             {
@@ -111,7 +121,7 @@ class DepSafeAgent:
                     self.add_messages(*e.messages)
                 except Exception as e:
                     self.handle_uncaught_exception(e)
-                    raise
+                    break
                 finally:
                     self.trajectory.save(self.messages, self.vuln_budget.to_dict())
                 if self.messages[-1].get("role") == "exit":

@@ -63,7 +63,7 @@ class SubAgent:
             )
         )
 
-    async def run(
+    def run(
         self,
         system_prompt: str,
         user_prompt: str,
@@ -87,7 +87,7 @@ class SubAgent:
         self.add_messages({"role": "user", "content": user_prompt})
         while True:
             try:
-                await self.step(tools)
+                self.step(tools)
                 self.n_consecutive_format_errors = 0
             except FormatError as e:
                 self.cost_budget.consume(e.messages[0].get("extra", {}).get("cost", 0.0))
@@ -116,11 +116,11 @@ class SubAgent:
                 break
         return self.messages[-1].get("extra", {})
 
-    async def step(self, tools: list[dict]) -> None:
-        ai_message = await self.query(tools)
-        await self.execute(ai_message)
+    def step(self, tools: list[dict]) -> None:
+        ai_message = self.query(tools)
+        self.execute(ai_message)
 
-    async def query(self, tools: list[dict]) -> dict:
+    def query(self, tools: list[dict]) -> dict:
         if self.step_counter.is_exhausted() or 0 < self.step_limit <= self.max_steps or self.cost_budget.is_exhausted():
             raise LimitsExceeded(
                 {
@@ -137,7 +137,7 @@ class SubAgent:
             )
         self.n_calls += 1
         self.step_counter.consume(1)
-        ai_message = await self.model.query(
+        ai_message = self.model.query(
             self.messages,
             tools=tools,
             token_budget=None,
@@ -146,6 +146,6 @@ class SubAgent:
         self.add_messages(ai_message)
         return ai_message
 
-    async def execute(self, ai_message: dict) -> None:
+    def execute(self, ai_message: dict) -> None:
         results = [self.env.execute(action) for action in ai_message.get("extra").get("actions")]
         self.messages += self.model.format_toolcall_observation_results(ai_message, results)

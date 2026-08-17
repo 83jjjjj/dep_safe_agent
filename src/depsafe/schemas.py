@@ -1,20 +1,18 @@
 from pydantic import BaseModel, Field
 
+
+class BashInput(BaseModel):
+    command: str = Field(..., description="The bash command to execute")
+
+
+_bash_params = BashInput.model_json_schema()
+_bash_params.pop("title", None)
 BASH_TOOL_SCHEMA = {
     "type": "function",
     "function": {
         "name": "bash",
         "description": "Execute a bash command",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "command": {
-                    "type": "string",
-                    "description": "The bash command to execute",
-                }
-            },
-            "required": ["command"],
-        },
+        "parameters": _bash_params,
     },
 }
 
@@ -25,14 +23,14 @@ class ScanVulnsInput(BaseModel):
     )
 
 
-_params = ScanVulnsInput.model_json_schema()
-_params.pop("title", None)
+_vuln_params = ScanVulnsInput.model_json_schema()
+_vuln_params.pop("title", None)
 SCAN_VULNS_SCHEMA = {
     "type": "function",
     "function": {
         "name": "scan_vulns",
         "description": "扫描项目的依赖文件，查找已知漏洞（CVE）。返回本轮需要修复的漏洞列表，数量受系统预算控制。若返回空列表则表示无更多漏洞。",
-        "parameters": _params,
+        "parameters": _vuln_params,
     },
 }
 
@@ -136,8 +134,8 @@ class GetChangelogInput(BaseModel):
     to_ver: str = Field(..., description="目标修复版本，例如 '2.31.0'")
 
 
-_params = GetChangelogInput.model_json_schema()
-_params.pop("title", None)
+_changelog_params = GetChangelogInput.model_json_schema()
+_changelog_params.pop("title", None)
 GET_CHANGELOG_SCHEMA = {
     "type": "function",
     "function": {
@@ -147,7 +145,7 @@ GET_CHANGELOG_SCHEMA = {
             "自动按 GitHub Releases → Raw Changelog 文件 → LLM 联网搜索 三级降级获取。"
             "返回结构化的 Changelog 对象，包含每个版本的变更记录、来源及降级警告。"
         ),
-        "parameters": _params,
+        "parameters": _changelog_params,
     },
 }
 
@@ -275,15 +273,16 @@ class CreateSecurityReportInput(BaseModel):
     priority: str = Field(..., description="漏洞优先级：P0/P1/P2/P3/P4")
     reachability: str = Field(..., description="漏洞可达性：reachable/unreachable/unknown")
     fix_suggestion: str | None = Field(None, description="自动修复全部失败时由 LLM 生成的修复建议")
-    attempts: list[AttemptRecord] = Field(..., description="所有修复尝试的结果列表，按尝试顺序排列")
+    attempt: AttemptRecord = Field(..., description="修复尝试的结果")
 
 
-# 自动生成 schema，与 AttemptRecord 的 Field 描述完全同步
+_report_params = CreateSecurityReportInput.model_json_schema()
+_report_params.pop("title", None)
 CREATE_SECURITY_REPORT_SCHEMA = {
     "type": "function",
     "function": {
         "name": "create_security_report",
         "description": "将漏洞修复尝试的结果追加到 SECURITY_FIX_REPORT.md。当所有版本自动修复均失败时调用。",
-        "parameters": CreateSecurityReportInput.model_json_schema(),
+        "parameters": _report_params,
     },
 }

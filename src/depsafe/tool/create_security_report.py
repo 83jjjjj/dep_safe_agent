@@ -22,58 +22,42 @@ def _build_report_section(
     priority: str,
     reachability: str,
     fix_suggestion: str | None,
-    attempts: list[AttemptRecord],
+    attempt: AttemptRecord,
     timestamp: str,
 ) -> str:
     """构建单个 CVE 的报告章节"""
-    any_success = any(a.success for a in attempts)
-    result_emoji = "✅" if any_success else "❌"
-    result_text = "自动修复成功" if any_success else "自动修复失败"
+    result_emoji = "✅" if attempt.success else "❌"
+    result_text = "自动修复成功" if attempt.success else "自动修复失败"
     lines = [
         "",
         "---",
         "",
         f"## {cve_id} ({timestamp})",
         "",
-        f"- **包名**: {pkg_name}",
+        f"- **包名**: `{pkg_name}`",
         f"- **优先级**: {priority}",
         f"- **可达性**: {reachability}",
+        f"- **目标版本**: `{attempt.attempted_version}`",
         f"- **修复结果**: {result_emoji} {result_text}",
     ]
-    if fix_suggestion:
+    if not attempt.success and fix_suggestion:
         lines.append(f"- **修复建议**: {fix_suggestion}")
-    lines.extend(
-        [
-            "",
-            "### 尝试记录",
-            "",
-            "| 版本 | 结果 | 失败原因 |",
-            "|------|------|----------|",
-        ]
-    )
-    for attempt in attempts:
-        status = "✅" if attempt.success else "❌"
-        lines.append(f"| {attempt.attempted_version} | {status} |")
-    failed_attempts = [a for a in attempts if not a.success and a.raw_error]
-    if failed_attempts:
+    if not attempt.success and attempt.raw_error:
         lines.extend(
             [
                 "",
-                "### 原始错误日志",
+                "### 错误诊断日志",
                 "",
                 "<details>",
-                "<summary>展开查看</summary>",
+                "<summary>展开查看完整堆栈</summary>",
                 "",
+                "```",
+                attempt.raw_error.strip(),
+                "```",
+                "",
+                "</details>",
             ]
         )
-        for attempt in failed_attempts:
-            lines.append(f"#### 版本 {attempt.attempted_version}")
-            lines.append("")
-            lines.append("```")
-            lines.append(attempt.raw_error)
-            lines.append("```")
-            lines.append("")
-        lines.append("</details>")
     lines.append("")
     return "\n".join(lines)
 
@@ -83,7 +67,7 @@ def create_security_report(
     cve_id: str,
     priority: str,
     reachability: str,
-    attempts: list[AttemptRecord],
+    attempt: AttemptRecord,
     fix_suggestion: str | None = None,
 ) -> dict:
     """
@@ -108,7 +92,7 @@ def create_security_report(
         priority=priority,
         reachability=reachability,
         fix_suggestion=fix_suggestion,
-        attempts=attempts,
+        attempt=attempt,
         timestamp=timestamp,
     )
     if not report_path.exists():
