@@ -29,7 +29,7 @@ class DepSafeAgent:
         self.docker_env = DockerEnvironment(self.config, self.project_root)
         self.local_env = LocalEnvironment()
         self.vuln_scanner = VulnerabilityScanner(self.vuln_budget, self.local_env, self.docker_env)
-        self.trajectory = Trajectory()
+        self.trajectory = Trajectory(self.project_root)
         self.n_consecutive_format_errors = 0
         self.logger = logging.getLogger("agent")
 
@@ -65,29 +65,23 @@ class DepSafeAgent:
             )
         )
 
-    def recover_trajectory(self) -> bool:
-        if not (self.trajectory.exists() and self.trajectory.validate_env()):
+    def _try_recover(self) -> bool:
+        """尝试恢复轨迹，返回是否需要从头开始"""
+        resumed, budget_state = self.trajectory.recover()
+        if budget_state is not None:
+            self.vuln_budget = VulnBudget.from_dict(budget_state)
+        if not resumed:
             return False
-        loaded = self.trajectory.load()
-        if loaded is None:
+        checkpoint = self.trajectory.load()
+        if checkpoint is None:
             return False
-        messages, budget_state = loaded
-        self.vuln_budget = VulnBudget.from_dict(budget_state)
-        if not messages:
-            self.logger.info("Resumed vuln_budget only, starting fresh message loop.")
-            return False
-        self.messages = messages
-        self.logger.info(
-            f"Resumed: {len(messages)} messages, "
-            f"{len(self.vuln_budget.covered)} covered, "
-            f"{len(self.vuln_budget.overflow)} overflow"
-        )
+        self.messages = checkpoint.get("messages", [])
         return True
 
     def run(self, task: str):
         self.config["task"] = task
         self.config.update(platform.uname()._asdict())
-        resuming = self.recover_trajectory()
+        resuming = self._try_recover()
         # 外层控制每次循环只处理vuln_limit个漏洞
         while True:
             if not resuming:
@@ -121,9 +115,15 @@ class DepSafeAgent:
                     self.add_messages(*e.messages)
                 except Exception as e:
                     self.handle_uncaught_exception(e)
-                    break
                 finally:
-                    self.trajectory.save(self.messages, self.vuln_budget.to_dict())
+                    # 唯一检查点，保存每一步状态
+                    last = self.messages[-1] if self.messages else {}
+                    exit_status = last.get("extra", {}).get("exit_status")
+                    if exit_status:
+                        status = "completed" if exit_status == "Submitted" else "error"
+                    else:
+                        status = "running"
+                    self.trajectory.save(self.messages, self.vuln_budget.to_dict(), status=status, exit_reason=exit_status)
                 if self.messages[-1].get("role") == "exit":
                     break
             if self.messages[-1].get("role") == "exit":
