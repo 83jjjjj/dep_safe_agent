@@ -55,7 +55,15 @@ agent:
     </system_information>
 
   instance_template: |
-    请解决以下问题：{{task}}
+    {%- if task -%}
+    请解决以下问题：{{ task }}
+    {%- else -%}
+    未指定具体任务。请自主执行完整工作流：
+    1. 调用 scan_vulns 扫描当前项目的所有依赖文件
+    2. 对发现的每个漏洞依次执行可达性分析、Changelog 分析、优先级评估、修复验证
+    3. 根据修复结果创建 PR 或 Issue
+    4. 最终生成安全报告并提交
+    {%- endif -%}
 docker:
   image: "python:3.12-slim"
   cwd: "/workspace"

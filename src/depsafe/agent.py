@@ -18,6 +18,8 @@ from depsafe.tool.vuln_scanner import VulnBudget, VulnerabilityScanner
 
 
 class DepSafeAgent:
+    PROJECT_MARKERS = frozenset({".depsafe", "pyproject.toml", "setup.py", "requirements.txt", "Pipfile"})
+
     def __init__(self):
         self.config = yaml.safe_load(Path(package_dir / "config" / "default.yaml").read_text(encoding="utf-8"))["agent"]
         self.model = LitellmModel("deepseek/deepseek-v4-flash", os.getenv("DEEPSEEK_API_KEY"))
@@ -25,13 +27,25 @@ class DepSafeAgent:
         self.step_counter = StepCounter(step_limit=150)
         self.cost_budget = CostBudget(cost_limit=10.0)
         self.vuln_budget = VulnBudget(vuln_limit=5)
-        self.project_root = Path.cwd().resolve()
+        self.project_root = self._verify_project_root()
         self.docker_env = DockerEnvironment(self.config, self.project_root)
         self.local_env = LocalEnvironment()
         self.vuln_scanner = VulnerabilityScanner(self.vuln_budget, self.local_env, self.docker_env)
         self.trajectory = Trajectory(self.project_root)
         self.n_consecutive_format_errors = 0
         self.logger = logging.getLogger("agent")
+
+    @staticmethod
+    def _verify_project_root() -> Path:
+        """验证当前 cwd 是一个合法的 agent 工作目录，即包含 .depsafe/ 或包含可识别的项目标记文件。"""
+        cwd = Path.cwd().resolve()
+        if not any((cwd / marker).exists() for marker in DepSafeAgent.PROJECT_MARKERS):
+            raise RuntimeError(
+                f"'{cwd}' is not a valid project root.\n"
+                f"Please run depsafe from a directory containing one of: "
+                f"{', '.join(sorted(DepSafeAgent.PROJECT_MARKERS))}"
+            )
+        return cwd
 
     def get_template_vars(self) -> dict:
         vars_dict = {
@@ -78,8 +92,8 @@ class DepSafeAgent:
         self.messages = checkpoint.get("messages", [])
         return True
 
-    def run(self, task: str):
-        self.config["task"] = task
+    def run(self, task: str | None = None):
+        self.config["task"] = task or ""
         self.config.update(platform.uname()._asdict())
         resuming = self._try_recover()
         # 外层控制每次循环只处理vuln_limit个漏洞
