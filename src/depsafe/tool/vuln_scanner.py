@@ -122,7 +122,7 @@ class VulnerabilityScanner:
             return ScanVulnsResult(vulns=batch)
         logger.info(f"[Docker] 解析依赖: {dep_file_path}")
         try:
-            result = self.docker_env.execute({"name": "parse_deps", "arguments": {"dep_file_path": dep_file_path}})
+            result = self.docker_env.execute({"name": "parse_deps", "arguments": {"file_path": dep_file_path}})
         except Submitted:
             raise
         if result["returncode"] != 0:

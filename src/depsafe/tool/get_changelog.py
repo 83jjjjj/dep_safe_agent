@@ -74,7 +74,6 @@ class ChangelogOrchestrator:
     def __init__(self, model: LitellmModel, env: LocalEnvironment, step_counter: StepCounter, cost_budget: CostBudget):
         self.step_counter = step_counter
         self.env = env
-        self.env.local_tools["web_search"] = web_search
         self.env.local_tools["get_changelog"] = self.get_changelog
         self.raw_fetcher = RawFileFetcher()
         self.llm_fallback = LLMSearchFallback(model, self.env, step_counter, cost_budget)
@@ -262,6 +261,7 @@ class LLMSearchFallback:
     def __init__(self, model: LitellmModel, env: LocalEnvironment, step_counter: StepCounter, cost_budget: CostBudget):
         self.model = model
         self.env = env
+        self.env.local_tools["web_search"] = web_search
         self.step_counter = step_counter
         self.cost_budget = cost_budget
 

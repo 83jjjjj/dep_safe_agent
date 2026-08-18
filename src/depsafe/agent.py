@@ -14,6 +14,8 @@ from depsafe.environment.docker import DockerEnvironment
 from depsafe.environment.local import LocalEnvironment
 from depsafe.exceptions import FormatError, InterruptAgentFlow, LimitsExceeded
 from depsafe.model import LitellmModel
+from depsafe.tool.get_changelog import ChangelogOrchestrator
+from depsafe.tool.reachability_analyzer import ReachabilityAnalyzer
 from depsafe.tool.vuln_scanner import VulnBudget, VulnerabilityScanner
 
 
@@ -30,7 +32,16 @@ class DepSafeAgent:
         self.project_root = self._verify_project_root()
         self.docker_env = DockerEnvironment(self.config, self.project_root)
         self.local_env = LocalEnvironment()
-        self.vuln_scanner = VulnerabilityScanner(self.vuln_budget, self.local_env, self.docker_env)
+
+        self.vuln_scanner = VulnerabilityScanner(self.docker_env, self.local_env, self.vuln_budget)
+        self._reachability_analyzer = ReachabilityAnalyzer(env=self.local_env)
+        self._changelog_orchestrator = ChangelogOrchestrator(
+            model=self.model,
+            env=self.local_env,
+            step_counter=self.step_counter,
+            cost_budget=self.cost_budget,
+        )
+
         self.trajectory = Trajectory(self.project_root)
         self.n_consecutive_format_errors = 0
         self.logger = logging.getLogger("agent")

@@ -45,7 +45,7 @@ agent:
     调用 `echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT` 命令来结束任务。
 
     ## 严格规则
-    1. 每回合有且仅有一个工具调用，禁止编造工具返回值。
+    1. 每回合必须进行工具调用，禁止编造工具返回值。
     2. `create_security_report` 是每个漏洞处理流程的终点，不可省略。
     3. `apply_fix_and_verify` 中的 `module_name` 必须准确填写（如 Pillow→PIL）。
     4. 完成所有漏洞处理后，必须调用 `echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT` 终止任务。

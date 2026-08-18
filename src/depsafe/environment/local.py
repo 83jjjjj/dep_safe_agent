@@ -3,38 +3,29 @@ import logging
 from pydantic_core import to_jsonable_python
 
 from depsafe.exceptions import Submitted
-from depsafe.tool.assess_priority import assess_priority
-from depsafe.tool.create_github_issue import create_github_issue
-from depsafe.tool.create_github_pr import create_github_pr
-from depsafe.tool.create_security_report import create_security_report
-from depsafe.tool.utils.cve_checker import check_cve
 
 logger = logging.getLogger(__name__)
 
 
 class LocalEnvironment:
-    TOOL_REGISTRY = {
-        "check_cve": check_cve,
-        "assess_priority": assess_priority,
-        "create_github_issue": create_github_issue,
-        "create_github_pr": create_github_pr,
-        "create_security_report": create_security_report,
-        # 动态注册
-        # "analyze_reachability": analyze_reachability,
-        # "get_changelog": get_changelog,
-    }
+    def __init__(self):
+        from depsafe.tool.assess_priority import assess_priority
+        from depsafe.tool.create_github_issue import create_github_issue
+        from depsafe.tool.create_github_pr import create_github_pr
+        from depsafe.tool.create_security_report import create_security_report
+        from depsafe.tool.utils.cve_checker import check_cve
+
+        self.local_tools: dict[str, callable] = {
+            "check_cve": check_cve,
+            "assess_priority": assess_priority,
+            "create_github_issue": create_github_issue,
+            "create_github_pr": create_github_pr,
+            "create_security_report": create_security_report,
+        }
 
     def execute(self, action: dict) -> dict:
         tool_name = action.get("name", "")
         args = action.get("arguments", {})
-        func = self.TOOL_REGISTRY.get(tool_name)
-        if not func:
-            return {
-                "output": f"Unknown local tool: {tool_name}",
-                "returncode": -1,
-                "exception_info": f"Tool '{tool_name}' not found in registry",
-                "extra": {"exception_type": "KeyError", "exception": ""},
-            }
         if tool_name == "submit_result":  # subagent中结束标识
             submission = action["arguments"]["result"]
             raise Submitted(
@@ -44,6 +35,14 @@ class LocalEnvironment:
                     "extra": {"exit_status": "Submitted", "submission": submission},
                 }
             )
+        func = self.local_tools.get(tool_name)
+        if not func:
+            return {
+                "output": f"Unknown local tool: {tool_name}",
+                "returncode": -1,
+                "exception_info": f"Tool '{tool_name}' not found in registry",
+                "extra": {"exception_type": "KeyError", "exception": ""},
+            }
         try:
             result = func(**args)
         except Exception as e:
