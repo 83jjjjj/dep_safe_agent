@@ -64,7 +64,12 @@ def _parse_cvss_severity(cvss_vector: str) -> str:
     return "LOW"
 
 
-def assess_priority(data: PriorityInput) -> PriorityResult:
+def assess_priority(
+    reachability_confidence: str,
+    has_breaking_change: bool,
+    cvss_vector: str | None = None,
+    advisory_severity: str | None = None,
+) -> PriorityResult:
     """
     评估漏洞修复的优先级。
 
@@ -77,13 +82,13 @@ def assess_priority(data: PriorityInput) -> PriorityResult:
     Returns:
         PriorityResult: 包含优先级、严重性和修复理由的结果对象。
     """
-    if data.cvss_vector:
-        severity = _parse_cvss_severity(data.cvss_vector)
-    elif data.advisory_severity:
-        severity = data.advisory_severity.upper()
+    if cvss_vector:
+        severity = _parse_cvss_severity(cvss_vector)
+    elif advisory_severity:
+        severity = advisory_severity.upper()
     else:
         severity = "LOW"
-    conf = data.reachability_confidence.lower()
+    conf = reachability_confidence.lower()
     if conf == "none":
         priority = "P4"
         reason = "项目中未发现该漏洞函数的调用"
@@ -91,7 +96,7 @@ def assess_priority(data: PriorityInput) -> PriorityResult:
         priority = "P3"
         reason = "调用链为动态调用，置信度低，可能为误报"
     elif severity in ("CRITICAL", "HIGH"):
-        if data.has_breaking_change:
+        if has_breaking_change:
             priority = "P1"
             reason = f"高危漏洞({severity})，但修复版本含破坏性变更，需人工评估"
         else:
