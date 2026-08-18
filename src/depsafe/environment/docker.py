@@ -16,9 +16,13 @@ class DockerEnvironment:
     ALLOWED_TOOLS = {"bash", "parse_deps", "apply_fix_and_verify"}
 
     RUNNER_SCRIPT = """
-import sys, json, traceback
-from dep_safe_agent.src.depsafe.tool.parse_deps import parse_deps
-from dep_safe_agent.src.depsafe.tool.apply_fix_and_verify import apply_fix_and_verify
+import sys, json, traceback, os
+
+from depsafe.tool.utils.dep_parser import parse_deps
+from depsafe.tool.apply_fix_and_verify import apply_fix_and_verify
+from pydantic import BaseModel
+
+
 
 TOOLS = {
     "parse_deps": parse_deps,
@@ -64,7 +68,7 @@ if __name__ == "__main__":
     def __init__(self, config: dict, project_root: str):
         self.docker_cfg = config.get("docker", {})
         self.project_root = Path(project_root).resolve()
-        self.image = self.docker_cfg.get("image", "python:3.12-slim")
+        self.image = self.docker_cfg.get("image", "depsafe-runner:latest")
         self.cwd = self.docker_cfg.get("cwd", "/workspace")
         self.timeout = self.docker_cfg.get("timeout", 300)
         self.docker_bin = self.docker_cfg.get("executable", "docker")
@@ -84,6 +88,8 @@ if __name__ == "__main__":
     def _init_container(self):
         logger.info(f"清理残余容器: {self.container_name}")
         subprocess.run([self.docker_bin, "rm", "-f", self.container_name], capture_output=True, text=True)
+        # 找到 dep_safe_agent 的源码根目录
+        pkg_root = Path(__file__).resolve().parents[3]
         cmd = [
             self.docker_bin,
             "run",
@@ -96,8 +102,9 @@ if __name__ == "__main__":
             self.cwd,
             *self.run_args,
             self.image,
-            "sleep",
-            "infinity",
+            "bash",
+            "-c",
+            "sleep infinity",
         ]
         logger.info(f"启动容器: {' '.join(cmd)}")
         result = subprocess.run(cmd, capture_output=True, text=True)
@@ -231,6 +238,7 @@ if __name__ == "__main__":
             if tool_name == "apply_fix_and_verify":
                 try:
                     from depsafe.tool.apply_fix_and_verify import FixAttemptResult
+
                     fix_result = FixAttemptResult.model_validate(parsed.get("output"))
                     self.vuln_budget.mark_covered([Vulnerability(pkg_name=fix_result.pkg_name, cve_id=fix_result.cve_id)])
                 except ValidationError as e:
