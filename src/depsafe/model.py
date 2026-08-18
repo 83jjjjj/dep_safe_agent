@@ -4,6 +4,7 @@ import logging
 import litellm
 from jinja2 import StrictUndefined, Template
 from pydantic import BaseModel
+from pydantic_core import to_jsonable_python
 
 from depsafe.exceptions import FormatError
 from depsafe.schemas import (
@@ -189,7 +190,7 @@ class LitellmModel:
             msg["extra"] = extra
         return msg
 
-    def _format_toolcall_observation_results(self, message: dict, outputs: list[dict]) -> list[dict]:
+    def format_toolcall_observation_results(self, message: dict, outputs: list[dict]) -> list[dict]:
         # 将工具结果outputs转化为合法格式
         actions = message["extra"]["actions"]
         tool_messages = []
@@ -197,6 +198,6 @@ class LitellmModel:
             tool_message = {}
             tool_message["role"] = "tool"
             tool_message["tool_call_id"] = action["tool_call_id"]
-            tool_message["content"] = json.dumps(output, ensure_ascii=False)
+            tool_message["content"] = json.dumps(to_jsonable_python(output), ensure_ascii=False)
             tool_messages.append(tool_message)
         return tool_messages
