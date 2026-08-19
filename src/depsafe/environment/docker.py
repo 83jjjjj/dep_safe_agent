@@ -16,12 +16,11 @@ class DockerEnvironment:
     ALLOWED_TOOLS = {"bash", "parse_deps", "apply_fix_and_verify"}
 
     RUNNER_SCRIPT = """
-import sys, json, traceback, os
+import sys, json, traceback
 
 from depsafe.tool.utils.dep_parser import parse_deps
 from depsafe.tool.apply_fix_and_verify import apply_fix_and_verify
-from pydantic import BaseModel
-
+from pydantic_core import to_jsonable_python
 
 
 TOOLS = {
@@ -48,7 +47,8 @@ def main():
 
     try:
         result = func(**args)
-        print(json.dumps({"status": "success", "output": result.model_dump(mode="json") if isinstance(result, BaseModel) else result}))
+        safe_output = to_jsonable_python(result)
+        print(json.dumps({"status": "success", "output": safe_output}))
         sys.exit(0)
     except Exception as e:
         exc_type = type(e).__name__

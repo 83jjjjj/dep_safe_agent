@@ -33,21 +33,22 @@ def parse_deps(file_path: str) -> list[dict]:
     poetry_lock = project_dir / "poetry.lock"
     uv_lock = project_dir / "uv.lock"
     pipfile_lock = project_dir / "Pipfile.lock"
-    if poetry_lock.exists():
-        return _parse_poetry_lock(poetry_lock)
-    elif uv_lock.exists():
-        return _parse_uv_lock(uv_lock)
-    elif pipfile_lock.exists():
-        return _parse_pipfile_lock(pipfile_lock)
-    # 否则依据依赖文件构建依赖树
-    file_name = path.name
     deps = []
-    if file_name in ["requirements.txt", "requirements.in", "pyproject.toml"]:
-        deps = _compile_dependencies(file_path)
-    elif file_name == "Pipfile":
-        deps = _compile_pipfile_dependencies(file_path)
+    if poetry_lock.exists():
+        deps = _parse_poetry_lock(poetry_lock)
+    elif uv_lock.exists():
+        deps = _parse_uv_lock(uv_lock)
+    elif pipfile_lock.exists():
+        deps = _parse_pipfile_lock(pipfile_lock)
+    # 否则依据依赖文件构建依赖树
     else:
-        raise ValueError(f"不支持的依赖文件格式: {file_name}")
+        file_name = path.name
+        if file_name in ["requirements.txt", "requirements.in", "pyproject.toml"]:
+            deps = _compile_dependencies(file_path)
+        elif file_name == "Pipfile":
+            deps = _compile_pipfile_dependencies(file_path)
+        else:
+            raise ValueError(f"不支持的依赖文件格式: {file_name}")
     return [dep.model_dump(mode="json") for dep in deps]
 
 
