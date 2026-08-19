@@ -121,7 +121,7 @@ class SubAgent:
         self.execute(ai_message)
 
     def query(self, tools: list[dict]) -> dict:
-        if self.step_counter.is_exhausted() or 0 < self.step_limit <= self.max_steps or self.cost_budget.is_exhausted():
+        if self.step_counter.is_exhausted() or 0 < self.step_limit <= self.n_calls or self.cost_budget.is_exhausted():
             raise LimitsExceeded(
                 {
                     "role": "exit",
