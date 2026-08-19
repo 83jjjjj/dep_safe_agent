@@ -50,9 +50,82 @@ ANALYZE_REACHABILITY_SCHEMA = {
     "function": {
         "name": "analyze_reachability",
         "description": (
-            "基于 AST 静态分析指定文件中对目标函数的调用可达性。返回调用证据列表（含行号、代码片段、置信度）及分析错误信息。"
+            "分析指定文件中漏洞触发条件的可达性。"
+            "先通过 AST 追踪 target_functions 的调用链；"
+            "若未发现高置信度证据且提供了 target_description，"
+            "自动启动语义代码搜索以覆盖属性赋值、配置变更等非函数调用类触发条件。"
+            "返回调用证据列表（含行号、代码片段、置信度、证据类型）及分析错误信息。"
         ),
         "parameters": _reach_params,
+    },
+}
+
+
+class DynamicCallResolution(BaseModel):
+    """单条动态调用的解析结果"""
+
+    original_line: int = Field(..., description="原始代码行号")
+    resolved_path: str = Field(..., description="解析后的完整函数路径")
+    confidence: str = Field(..., description="置信度: high / medium / low")
+
+
+class DynamicCallsResult(BaseModel):
+    """SubAgent 探索动态调用可达性的提交结果"""
+
+    resolved_calls: list[DynamicCallResolution] = Field(default_factory=list, description="动态调用解析结果列表")
+
+
+_dynamic_calls_params = DynamicCallsResult.model_json_schema()
+_dynamic_calls_params.pop("title", None)
+
+DYNAMIC_CALLS_SUBMIT_RESULT_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "submit_result",
+        "description": (
+            "提交最终结果并结束当前任务。"
+            "当你已经收集到足够信息、可以给出最终结论时，必须调用此工具。"
+            "调用此工具后，任务将立即终止。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "result": _dynamic_calls_params,
+            },
+            "required": ["result"],
+        },
+    },
+}
+
+
+class SemanticSearchResult(BaseModel):
+    """SubAgent 语义探索可达性的提交结果"""
+
+    reachable: bool = Field(..., description="漏洞触发条件是否可达")
+    evidence_code: str = Field(default="", description="匹配的代码行，不可达时为空字符串")
+    evidence_line: int = Field(default=0, description="行号，不可达时为 0")
+    reasoning: str = Field(default="", description="一句话判断理由")
+
+
+_semantic_search_params = SemanticSearchResult.model_json_schema()
+_semantic_search_params.pop("title", None)
+
+SEMANTIC_SEARCH_SUBMIT_RESULT_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "submit_result",
+        "description": (
+            "提交最终结果并结束当前任务。"
+            "当你已经收集到足够信息、可以给出最终结论时，必须调用此工具。"
+            "调用此工具后，任务将立即终止。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "result": _semantic_search_params,
+            },
+            "required": ["result"],
+        },
     },
 }
 
@@ -69,61 +142,6 @@ WEB_SEARCH_SCHEMA = {
         "name": "web_search",
         "description": "在互联网上搜索最新信息，输入搜索关键词，返回相关的网页标题和内容摘要。",
         "parameters": _web_params,
-    },
-}
-
-SUBMIT_RESULT_SCHEMA = {
-    "type": "function",
-    "function": {
-        "name": "submit_result",
-        "description": (
-            "提交最终结果并结束当前任务。"
-            "当你已经收集到足够信息、可以给出最终结论时，必须调用此工具。"
-            "调用此工具后，任务将立即终止。"
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "result": {
-                    "type": "object",
-                    "description": "任务的最终结果，结构化对象。",
-                    "properties": {
-                        "pkg_name": {
-                            "type": "string",
-                            "description": "依赖包的名称",
-                        },
-                        "changelogs": {
-                            "type": "array",
-                            "description": "from_ver和to_ver之间每个版本的changelog内容",
-                            "items": {
-                                "type": "object",
-                                "additionalProperties": {"type": "string"},
-                            },
-                        },
-                        "from_ver": {
-                            "type": "string",
-                            "description": "项目当前的依赖包版本",
-                        },
-                        "to_ver": {
-                            "type": "string",
-                            "description": "依赖包的第一个修复版本",
-                        },
-                        "source": {
-                            "type": "string",
-                            "description": "changelog来源",
-                        },
-                    },
-                    "required": [
-                        "pkg_name",
-                        "changelogs",
-                        "from_ver",
-                        "to_ver",
-                        "source",
-                    ],
-                }
-            },
-            "required": ["result"],
-        },
     },
 }
 

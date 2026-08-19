@@ -34,10 +34,15 @@ class DepSafeAgent:
         self.local_env = LocalEnvironment()
 
         self.vuln_scanner = VulnerabilityScanner(self.docker_env, self.local_env, self.vuln_budget)
-        self._reachability_analyzer = ReachabilityAnalyzer(env=self.local_env)
-        self._changelog_orchestrator = ChangelogOrchestrator(
-            model=self.model,
+        self._reachability_analyzer = ReachabilityAnalyzer(
             env=self.local_env,
+            model=self.model,
+            step_counter=self.step_counter,
+            cost_budget=self.cost_budget,
+        )
+        self._changelog_orchestrator = ChangelogOrchestrator(
+            env=self.local_env,
+            model=self.model,
             step_counter=self.step_counter,
             cost_budget=self.cost_budget,
         )
