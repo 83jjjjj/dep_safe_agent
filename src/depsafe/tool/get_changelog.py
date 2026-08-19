@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import re
 from collections.abc import Generator
@@ -11,13 +12,15 @@ from packaging.version import parse as parse_version
 from pydantic import BaseModel, Field
 from tavily import TavilyClient
 
-from depsafe.schemas import SUBMIT_RESULT_SCHEMA, WEB_SEARCH_SCHEMA
+from depsafe.schemas import WEB_SEARCH_SCHEMA
 from depsafe.tool.utils.subagent import SubAgent
 
 if TYPE_CHECKING:
     from depsafe.budget import CostBudget, StepCounter
     from depsafe.environment.local import LocalEnvironment
     from depsafe.model import LitellmModel
+
+logger = logging.getLogger(__name__)
 
 
 class Changelog(BaseModel):
@@ -27,6 +30,28 @@ class Changelog(BaseModel):
     to_ver: str = Field(..., description="依赖包的第一个修复版本")
     source: str = Field(..., description="changelog来源")
     warnings: list[str] = Field(default_factory=list, description="降级过程中的警告信息，记录了哪些步骤失败以及原因")
+
+
+_changelog_submit_params = Changelog.model_json_schema()
+_changelog_submit_params.pop("title", None)
+GET_CHANGELOG_SUBMIT_RESULT_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "submit_result",
+        "description": (
+            "提交最终结果并结束当前任务。"
+            "当你已经收集到足够信息、可以给出最终结论时，必须调用此工具。"
+            "调用此工具后，任务将立即终止。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "result": _changelog_submit_params,
+            },
+            "required": ["result"],
+        },
+    },
+}
 
 
 def _get_pypi_source_url(pkg: str) -> tuple[str | None, str | None]:
@@ -40,6 +65,7 @@ def _get_pypi_source_url(pkg: str) -> tuple[str | None, str | None]:
             project_urls = data.get("info", {}).get("project_urls", {})
             return project_urls.get("Source"), None
         except Exception as e:
+            logger.warning(f"[PyPI] pkg={pkg} 请求失败: {type(e).__name__}: {e}")
             return None, f"{type(e).__name__}: {e}"
 
 
@@ -53,6 +79,7 @@ def _iter_github_releases(owner: str, repo: str, warnings: list[str]) -> Generat
         warnings.append("未找到 GITHUB_TOKEN，将使用未认证请求（限流严格）")
     github_api_url = f"https://api.github.com/repos/{owner}/{repo}/releases"
     page = 1
+    total_yielded = 0
     with httpx.Client(headers=headers) as client:
         while True:
             try:
@@ -61,17 +88,22 @@ def _iter_github_releases(owner: str, repo: str, warnings: list[str]) -> Generat
                 releases = response.json()
             except Exception as e:
                 warnings.append(f"GitHub Releases 请求失败 (page={page}): {type(e).__name__}: {e}")
+                logger.error(f"[GitHub Releases] {owner}/{repo} page={page} 请求失败: {e}")
                 break
             if not releases:
+                logger.info(f"[GitHub Releases] {owner}/{repo} page={page} 返回空，遍历结束")
                 break
+            logger.info(f"[GitHub Releases] {owner}/{repo} page={page} 获取到 {len(releases)} 条 release")
             yield from releases
+            total_yielded += len(releases)
             page += 1
+            logger.info(f"[GitHub Releases] {owner}/{repo} 总计获取 {total_yielded} 条 release")
 
 
 class ChangelogOrchestrator:
     """编排器：统一管理降级逻辑"""
 
-    def __init__(self, model: LitellmModel, env: LocalEnvironment, step_counter: StepCounter, cost_budget: CostBudget):
+    def __init__(self, env: LocalEnvironment, model: LitellmModel, step_counter: StepCounter, cost_budget: CostBudget):
         self.step_counter = step_counter
         self.env = env
         self.env.local_tools["get_changelog"] = self.get_changelog
@@ -91,13 +123,14 @@ class ChangelogOrchestrator:
             依赖包的变更日志
         """
         warnings: list[str] = []
+        logger.info(f"[Changelog] ====== 开始获取 {pkg} {from_ver} → {to_ver} ======")
         # 通过pypi拿到repo链接
         repo_url, pypi_err = _get_pypi_source_url(pkg)
         if not repo_url:
             warnings.append(f"PyPI 未找到 {pkg} 的 GitHub 仓库链接: {pypi_err or '无 Source URL'}")
         owner, repo = None, None
         if not repo_url:
-            print(f"未找到 {pkg} 的 GitHub 仓库链接")
+            logger.warning(f"[Changelog] PyPI 未返回 Source URL for {pkg}")
         # 访问github拿到release
         if repo_url:
             parts = repo_url.rstrip("/").split("/")
@@ -105,6 +138,7 @@ class ChangelogOrchestrator:
                 owner, repo = parts[-2], parts[-1]
             else:
                 warnings.append(f"PyPI Source URL 格式无法解析: {repo_url}")
+        logger.info(f"[Changelog] 解析结果: owner={owner}, repo={repo}")
         try:
             min_ver = parse_version(from_ver)
             max_ver = parse_version(to_ver)
@@ -112,21 +146,41 @@ class ChangelogOrchestrator:
         except InvalidVersion as e:
             warnings.append(f"版本号格式无效: {e}")
             version_valid = False
+            logger.warning(f"[Changelog] 版本号解析失败: from_ver={from_ver}, to_ver={to_ver}, error={e}")
         if owner and repo and version_valid:
             changelogs = []
+            skipped_above = 0  # 🆕 DIAG: 统计跳过的高版本数
+            skipped_invalid = 0  # 🆕 DIAG: 统计无法解析的版本数
+            hit_break = False  # 🆕 DIAG: 标记是否因 <=min_ver 而 break
             for rel in _iter_github_releases(owner, repo, warnings):
-                ver_name = rel.get("tag_name", "").lstrip("v")
+                tag_name = rel.get("tag_name", "")  # 🆕 DIAG: 保留原始 tag
+                ver_name = tag_name.lstrip("v")
                 try:
                     cur_ver = parse_version(ver_name)
                 except InvalidVersion:
+                    skipped_invalid += 1  # 🆕 DIAG
+                    logger.debug(f"[Changelog] 跳过无法解析的 tag: '{tag_name}' → '{ver_name}'")  # 🆕 DIAG
                     continue
                 if cur_ver > max_ver:
+                    skipped_above += 1  # 🆕 DIAG
                     continue
                 if cur_ver <= min_ver:
+                    logger.info(  # 🆕 DIAG: 记录触发 break 的版本
+                        f"[Changelog] 遇到 <=min_ver 的版本: {ver_name} <= {from_ver}, "
+                        f"此时已收集 {len(changelogs)} 条, break"
+                    )
+                    hit_break = True  # 🆕 DIAG
                     break
                 changelog = rel.get("body") or "无变更日志"
                 changelogs.append({"ver_name": ver_name, "changelog": changelog})
+            # 🆕 DIAG: 打印完整的过滤统计摘要
+            logger.info(
+                f"[Changelog] GitHub Releases 过滤摘要: "
+                f"matched={len(changelogs)}, skipped_above_max={skipped_above}, "
+                f"skipped_invalid_tag={skipped_invalid}, hit_break={hit_break}"
+            )
             if changelogs:
+                logger.info(f"[Changelog] ✅ GitHub Releases 命中，返回 {len(changelogs)} 条 changelog")
                 return Changelog(
                     pkg_name=pkg,
                     changelogs=changelogs,
@@ -135,14 +189,25 @@ class ChangelogOrchestrator:
                     source=f"github_repo:{repo_url}",
                     warnings=warnings,
                 )
+            else:
+                logger.warning(  # 🆕 DIAG: 明确说明为什么没命中
+                    f"[Changelog] ❌ GitHub Releases 未匹配到任何版本 "
+                    f"(range={from_ver}→{to_ver}, skipped_above={skipped_above}, "
+                    f"invalid={skipped_invalid}, break={hit_break})"
+                )
         if owner and repo:
             warnings.append("[降级] GitHub Releases 未找到，尝试探测 Raw 文件...")
+            logger.info(f"[Changelog] ⬇️ 降级到 Raw File Fetcher: {owner}/{repo}")  # 🆕 DIAG
             raw_result, raw_warnings = self.raw_fetcher.fetch(owner, repo, from_ver, to_ver)
             warnings.extend(raw_warnings)
             if raw_result:
+                logger.info(f"[Changelog] ✅ Raw File 命中: source={raw_result.source}")  # 🆕 DIAG
                 raw_result.warnings = warnings
                 return raw_result
+            else:
+                logger.warning(f"[Changelog] ❌ Raw File 也未命中")  # 🆕 DIAG
         warnings.append("[降级] Raw 文件未找到，启动 LLM 自主搜索...")
+        logger.warning(f"[Changelog] ⬇️ 降级到 LLM SubAgent Web Search")  # 🆕 DIAG
         llm_result = self.llm_fallback.search(pkg, from_ver, to_ver)
         llm_result.warnings = warnings + llm_result.warnings
         return llm_result
@@ -266,7 +331,7 @@ class LLMSearchFallback:
         self.cost_budget = cost_budget
 
     def search(self, pkg: str, from_ver: str, to_ver: str) -> Changelog:
-        tools = [WEB_SEARCH_SCHEMA, SUBMIT_RESULT_SCHEMA]
+        tools = [WEB_SEARCH_SCHEMA, GET_CHANGELOG_SUBMIT_RESULT_SCHEMA]
         system_prompt = """\
 你是一个专业的软件供应链安全分析师。
 请通过调用工具获取信息，然后给出最终总结。
@@ -299,7 +364,7 @@ class LLMSearchFallback:
             env=self.env,
             step_counter=self.step_counter,
             cost_budget=self.cost_budget,
-            max_steps=5,
+            step_limit=5,
         )
         result = sub_agent.run(system_prompt, user_prompt, tools)
         warnings: list[str] = []
