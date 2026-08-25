@@ -6,8 +6,8 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
+from depsafe.budget import VulnBudget, Vulnerability
 from depsafe.exceptions import Submitted
-from depsafe.tool.utils.cve_checker import Vulnerability
 
 logger = logging.getLogger(__name__)
 
@@ -65,9 +65,10 @@ if __name__ == "__main__":
     main()
 """  # noqa: E501
 
-    def __init__(self, config: dict, project_root: str):
+    def __init__(self, config: dict, project_root: str, vuln_budget: VulnBudget):
         self.docker_cfg = config.get("docker", {})
         self.project_root = Path(project_root).resolve()
+        self.vuln_budget = vuln_budget
         self.image = self.docker_cfg.get("image", "depsafe-runner:latest")
         self.cwd = self.docker_cfg.get("cwd", "/workspace")
         self.timeout = self.docker_cfg.get("timeout", 300)
@@ -88,8 +89,6 @@ if __name__ == "__main__":
     def _init_container(self):
         logger.info(f"清理残余容器: {self.container_name}")
         subprocess.run([self.docker_bin, "rm", "-f", self.container_name], capture_output=True, text=True)
-        # 找到 dep_safe_agent 的源码根目录
-        pkg_root = Path(__file__).resolve().parents[3]
         cmd = [
             self.docker_bin,
             "run",
