@@ -4,6 +4,7 @@ import logging
 import os
 import re
 from collections.abc import Generator
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import httpx
@@ -103,12 +104,19 @@ def _iter_github_releases(owner: str, repo: str, warnings: list[str]) -> Generat
 class ChangelogOrchestrator:
     """编排器：统一管理降级逻辑"""
 
-    def __init__(self, env: LocalEnvironment, model: LitellmModel, step_counter: StepCounter, cost_budget: CostBudget):
+    def __init__(
+        self,
+        env: LocalEnvironment,
+        model: LitellmModel,
+        step_counter: StepCounter,
+        cost_budget: CostBudget,
+        project_root: Path,
+    ):
         self.step_counter = step_counter
         self.env = env
         self.env.local_tools["get_changelog"] = self.get_changelog
         self.raw_fetcher = RawFileFetcher()
-        self.llm_fallback = LLMSearchFallback(model, self.env, step_counter, cost_budget)
+        self.llm_fallback = LLMSearchFallback(model, self.env, step_counter, cost_budget, project_root)
 
     def get_changelog(self, pkg: str, from_ver: str, to_ver: str) -> Changelog:
         """
@@ -323,12 +331,20 @@ def web_search(query: str) -> str:
 
 
 class LLMSearchFallback:
-    def __init__(self, model: LitellmModel, env: LocalEnvironment, step_counter: StepCounter, cost_budget: CostBudget):
+    def __init__(
+        self,
+        model: LitellmModel,
+        env: LocalEnvironment,
+        step_counter: StepCounter,
+        cost_budget: CostBudget,
+        project_root: Path,
+    ):
         self.model = model
         self.env = env
         self.env.local_tools["web_search"] = web_search
         self.step_counter = step_counter
         self.cost_budget = cost_budget
+        self.project_root = project_root
 
     def search(self, pkg: str, from_ver: str, to_ver: str) -> Changelog:
         tools = [WEB_SEARCH_SCHEMA, GET_CHANGELOG_SUBMIT_RESULT_SCHEMA]
@@ -364,6 +380,8 @@ class LLMSearchFallback:
             env=self.env,
             step_counter=self.step_counter,
             cost_budget=self.cost_budget,
+            project_root=self.project_root,
+            sub_task_name=f"search task for changelog of {pkg} from {from_ver} to {to_ver}",
             step_limit=5,
         )
         result = sub_agent.run(system_prompt, user_prompt, tools)

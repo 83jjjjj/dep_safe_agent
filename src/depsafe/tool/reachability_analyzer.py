@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import logging
 import os
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
@@ -49,12 +50,13 @@ class ReachabilityAnalyzer:
       Phase 2 跳过（description 为空）→ 返回空证据
     """
 
-    def __init__(self, env: LocalEnvironment, model: LitellmModel, step_counter: StepCounter, cost_budget: CostBudget):
+    def __init__(self, env: LocalEnvironment, model: LitellmModel, step_counter: StepCounter, cost_budget: CostBudget, project_root: Path):
         self.env = env
         self.model = model
         self.step_counter = step_counter
         self.cost_budget = cost_budget
         self.env.local_tools["analyze_reachability"] = self.analyze_reachability
+        self.project_root = project_root
 
     def analyze_reachability(self, file_path: str, target_functions: list[str], target_description: str = "") -> dict:
         """
@@ -261,6 +263,8 @@ class ReachabilityAnalyzer:
             env=self.env,
             step_counter=self.step_counter,
             cost_budget=self.cost_budget,
+            project_root=self.project_root,
+            sub_task_name=f"explore task on {file_path} for dynamic calls",
             step_limit=2,
         )
         system_prompt = """\
@@ -332,6 +336,8 @@ class ReachabilityAnalyzer:
             env=self.env,
             step_counter=self.step_counter,
             cost_budget=self.cost_budget,
+            project_root=self.project_root,
+            sub_task_name=f"explore task on {file_path} for non-call vulns",
             step_limit=3,
         )
         system_prompt = """\
