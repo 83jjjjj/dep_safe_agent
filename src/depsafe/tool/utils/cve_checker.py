@@ -8,19 +8,11 @@ import os
 import httpx
 from packaging.specifiers import SpecifierSet
 from packaging.version import InvalidVersion, Version
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import ValidationError
+
+from depsafe.budget import Vulnerability
 
 logger = logging.getLogger(__name__)
-
-
-class Vulnerability(BaseModel):
-    model_config = ConfigDict(frozen=True)
-    pkg: str = Field(..., description="依赖包的名称")
-    cur_ver: str = Field(..., description="项目当前使用的依赖版本")
-    cve_id: str = Field(..., description="漏洞的 CVE 编号")
-    severity: str | None = Field(None, description="严重程度")
-    fixed_ver: str | None = Field(None, description="修复该漏洞的版本")
-    desc: str = Field("", description="漏洞描述")
 
 
 def _query_osv(pkg: str, ver: str) -> list[Vulnerability]:

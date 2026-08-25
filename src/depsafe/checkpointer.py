@@ -12,9 +12,21 @@ logger = logging.getLogger("agent")
 
 SUPPORTED_VERSIONS = {1}
 
+"""
+budget_state 统一结构约定：
+{
+    "token": {...},      # TokenBudget.to_dict()
+    "cost": {...},       # CostBudget.to_dict()
+    "step": {...},       # StepCounter.to_dict()
+    "vuln": {...},       # VulnBudget.to_dict()  (仅主 Agent 使用)
+}
+SubAgent 的 budget_state 不包含 "vuln" 字段。
+"""
+
 
 class Trajectory:
     """追踪链路轨迹，用于断点恢复和审计观测"""
+
     CHECKPOINT_DIR = ".depsafe"
     CHECKPOINT_FILE = "checkpoint.json"
     ARCHIVE_DIR = "archives"
@@ -151,3 +163,38 @@ class Trajectory:
             return False, budget_state
         logger.info(f"Resumed from interrupted run: {len(messages)} messages.")
         return True, budget_state
+
+
+class SubTrajectory:
+    """
+    SubAgent 只写审计日志。
+    - 不做断点恢复，ROI较低，无状态函数调用重试容易而恢复复杂
+    - 每次 run() 生成一个独立文件
+    - 文件名包含父任务标识，便于关联
+    """
+
+    SUB_DIR = ".depsafe/sub_trajectories"
+
+    def __init__(self, project_root: Path, sub_task_name: str):
+        self.project_root = project_root.resolve()
+        self.dir = project_root / self.SUB_DIR
+        self.sub_task_name = sub_task_name
+
+    def save(self, messages: list[dict], budget_state: dict, status: str = "completed", exit_reason: str | None = None):
+        """保存 SubAgent 执行轨迹（覆盖写入，无需原子操作——丢了就丢了）"""
+        self.dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{self.sub_task_name}_{ts}.json"
+        filepath = self.dir / filename
+        record = {
+            "version": 1,
+            "project_root": str(self.project_root),
+            "sub_task_name": self.sub_task_name,
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "status": status,
+            "exit_reason": exit_reason,
+            "messages": messages,
+            "budget_state": budget_state,
+        }
+        filepath.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
+        logger.debug(f"SubAgent trajectory saved: {filepath}")

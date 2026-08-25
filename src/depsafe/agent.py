@@ -8,7 +8,7 @@ import yaml
 from jinja2 import StrictUndefined, Template
 
 from depsafe import package_dir
-from depsafe.budget import CostBudget, StepCounter, TokenBudget
+from depsafe.budget import CostBudget, StepCounter, TokenBudget, VulnBudget
 from depsafe.checkpointer import Trajectory
 from depsafe.environment.docker import DockerEnvironment
 from depsafe.environment.local import LocalEnvironment
@@ -16,11 +16,11 @@ from depsafe.exceptions import FormatError, InterruptAgentFlow, LimitsExceeded
 from depsafe.model import LitellmModel
 from depsafe.tool.get_changelog import ChangelogOrchestrator
 from depsafe.tool.reachability_analyzer import ReachabilityAnalyzer
-from depsafe.tool.vuln_scanner import VulnBudget, VulnerabilityScanner
+from depsafe.tool.vuln_scanner import VulnerabilityScanner
 
 
 class DepSafeAgent:
-    PROJECT_MARKERS = frozenset({".depsafe", "pyproject.toml", "setup.py", "requirements.txt", "Pipfile"})
+    PROJECT_MARKERS = frozenset({".depsafe", "pyproject.toml", "requirements.txt", "Pipfile"})
 
     def __init__(self):
         self.config = yaml.safe_load(Path(package_dir / "config" / "default.yaml").read_text(encoding="utf-8"))["agent"]
@@ -30,7 +30,7 @@ class DepSafeAgent:
         self.cost_budget = CostBudget(cost_limit=10.0)
         self.vuln_budget = VulnBudget(vuln_limit=5)
         self.project_root = self._verify_project_root()
-        self.docker_env = DockerEnvironment(self.config, self.project_root)
+        self.docker_env = DockerEnvironment(self.config, self.project_root, self.vuln_budget)
         self.local_env = LocalEnvironment()
 
         self.vuln_scanner = VulnerabilityScanner(self.docker_env, self.local_env, self.vuln_budget)
@@ -95,11 +95,31 @@ class DepSafeAgent:
             )
         )
 
+    def _build_budget_state(self) -> dict:
+        """构建完整的预算状态快照"""
+        return {
+            "token": self.token_budget.to_dict(),
+            "cost": self.cost_budget.to_dict(),
+            "step": self.step_counter.to_dict(),
+            "vuln": self.vuln_budget.to_dict(),
+        }
+
+    def _restore_budget_state(self, budget_state: dict) -> None:
+        """从快照恢复所有预算状态"""
+        if "token" in budget_state:
+            self.token_budget = TokenBudget.from_dict(budget_state["token"])
+        if "cost" in budget_state:
+            self.cost_budget = CostBudget.from_dict(budget_state["cost"])
+        if "step" in budget_state:
+            self.step_counter = StepCounter.from_dict(budget_state["step"])
+        if "vuln" in budget_state:
+            self.vuln_budget = VulnBudget.from_dict(budget_state["vuln"])
+
     def _try_recover(self) -> bool:
         """尝试恢复轨迹，返回是否需要从头开始"""
         resumed, budget_state = self.trajectory.recover()
         if budget_state is not None:
-            self.vuln_budget = VulnBudget.from_dict(budget_state)
+            self._restore_budget_state(budget_state)
         if not resumed:
             return False
         checkpoint = self.trajectory.load()
@@ -153,7 +173,7 @@ class DepSafeAgent:
                         status = "completed" if exit_status == "Submitted" else "error"
                     else:
                         status = "running"
-                    self.trajectory.save(self.messages, self.vuln_budget.to_dict(), status=status, exit_reason=exit_status)
+                    self.trajectory.save(self.messages, self._build_budget_state(), status=status, exit_reason=exit_status)
                 if self.messages[-1].get("role") == "exit":
                     break
             if self.messages[-1].get("role") == "exit":

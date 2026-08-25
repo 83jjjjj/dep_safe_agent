@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import logging
 import traceback
+from pathlib import Path
 from typing import TYPE_CHECKING
+
+from dep_safe_agent.src.depsafe.checkpointer import SubTrajectory
 
 from depsafe.exceptions import (
     FormatError,
@@ -11,7 +14,7 @@ from depsafe.exceptions import (
 )
 
 if TYPE_CHECKING:
-    from depsafe.budget import CostBudget, StepCounter
+    from depsafe.budget import CostBudget, StepCounter, TokenBudget
     from depsafe.environment.local import LocalEnvironment
     from depsafe.model import LitellmModel
 
@@ -36,14 +39,19 @@ class SubAgent:
         env: LocalEnvironment,
         step_counter: StepCounter,
         cost_budget: CostBudget,
+        project_root: Path,
+        sub_task_name: str,
         step_limit: int = 3,
     ):
         self.model = model
         self.env = env
         self.step_counter = step_counter
         self.cost_budget = cost_budget
+        self.token_budget = TokenBudget(self.model.model_name, usage_ratio=0.7)
         self.step_limit = step_limit
         self.n_calls = 0
+        self.max_consecutive_format_errors = 3
+        self.trajectory = SubTrajectory(project_root=project_root, sub_task_name=sub_task_name)
 
     def add_messages(self, *messages: dict) -> list[dict]:
         self.messages.extend(messages)
@@ -63,6 +71,20 @@ class SubAgent:
             )
         )
 
+    def _build_budget_state(self) -> dict:
+        """SubAgent 的预算快照"""
+        return {
+            "token": self.token_budget.to_dict(),
+            "cost": {
+                "consumed_this_run": self.cost_budget.cost,
+                "remaining": self.cost_budget.remaining(),
+            },
+            "step": {
+                "global_used": self.step_counter.global_used(),
+                "sub_calls": self.n_calls,
+            },
+        }
+
     def run(
         self,
         system_prompt: str,
@@ -78,10 +100,11 @@ class SubAgent:
             tools: 可用工具列表（调用方需确保包含 submit_result）
 
         Returns:
-            成功提交时: {"status": "submitted", "result": str, "steps": int}
-            步数耗尽时: {"status": "max_steps_reached", "steps": int, "last_message": dict | None}
-            全局超限时: {"status": "limits_exceeded", "steps": int}
-        """
+            最后一条 exit 消息的 extra 字段，典型结构：
+            - 正常提交: {"exit_status": "Submitted", "submission": "..."}
+            - 超限退出: {"exit_status": "LimitsExceeded", "submissions": "", ...}
+            - 格式错误: {"exit_status": "RepeatedFormatError", "submission": ""}
+            - 未捕获异常: {"exit_status": "<ExceptionClassName>", "submission": "", ...}        """
         self.messages: list[dict] = []
         self.add_messages({"role": "system", "content": system_prompt})
         self.add_messages({"role": "user", "content": user_prompt})
@@ -92,7 +115,7 @@ class SubAgent:
             except FormatError as e:
                 self.cost_budget.consume(e.messages[0].get("extra", {}).get("cost", 0.0))
                 self.n_consecutive_format_errors += 1
-                if 0 < self.config.max_consecutive_format_errors <= self.n_consecutive_format_errors:
+                if 0 < self.max_consecutive_format_errors <= self.n_consecutive_format_errors:
                     self.add_messages(
                         *e.messages,
                         {
@@ -109,9 +132,15 @@ class SubAgent:
                 self.handle_uncaught_exception(e)
                 raise
             finally:
-                pass
-                # todo
-                # self.save(self.config.output_path)
+                last = self.messages[-1] if self.messages else {}
+                exit_status = last.get("extra", {}).get("exit_status")
+                if exit_status:
+                    status = "completed" if exit_status == "Submitted" else "error"
+                else:
+                    status = "running"
+                self.trajectory.save(
+                    self.messages, budget_state=self._build_budget_state(), status=status, exit_reason=exit_status
+                )
             if self.messages[-1].get("role") == "exit":
                 break
         return self.messages[-1].get("extra", {})
@@ -121,7 +150,12 @@ class SubAgent:
         self.execute(ai_message)
 
     def query(self, tools: list[dict]) -> dict:
-        if self.step_counter.is_exhausted() or 0 < self.step_limit <= self.n_calls or self.cost_budget.is_exhausted():
+        if (
+            self.step_counter.is_exhausted()
+            or 0 < self.step_limit <= self.n_calls
+            or self.cost_budget.is_exhausted()
+            or self.token_budget.is_exhausted()
+        ):
             raise LimitsExceeded(
                 {
                     "role": "exit",
@@ -131,18 +165,18 @@ class SubAgent:
                         "submissions": "",
                         "step_counter": self.step_counter.global_used(),
                         "n_calls": self.n_calls,
-                        "cost_budget": self.cost_budget.remaining(),
+                        "cost_remaining": self.cost_budget.remaining(),
+                        "token_remaining": self.token_budget.remaining(),
                     },
                 }
             )
         self.n_calls += 1
         self.step_counter.consume(1)
-        ai_message = self.model.query(
-            self.messages,
-            tools=tools,
-            token_budget=None,
-        )
+        ai_message = self.model.query(self.messages, tools=tools)
         self.cost_budget.consume(ai_message.get("extra", {}).get("cost", 0.0))
+        self.token_budget.record(
+            ai_message.get("extra", {}).get("input_token", 0), ai_message.get("extra", {}).get("output_token", 0)
+        )
         self.add_messages(ai_message)
         return ai_message
 
