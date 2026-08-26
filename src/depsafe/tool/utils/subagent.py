@@ -5,7 +5,7 @@ import traceback
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from dep_safe_agent.src.depsafe.checkpointer import SubTrajectory
+from depsafe.checkpointer import SubTrajectory
 
 from depsafe.exceptions import (
     FormatError,

@@ -65,7 +65,7 @@ agent:
     4. 最终生成安全报告并提交
     {%- endif -%}
 docker:
-  image: "python:3.12-slim"
+  image: "depsafe-runner:latest"
   cwd: "/workspace"
   timeout: 300
   executable: "docker"

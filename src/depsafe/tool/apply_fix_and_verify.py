@@ -67,9 +67,24 @@ def _push_changes(branch: str, pkg_name: str, cve_id: str) -> tuple[bool, str]:
             return False, f"Rebase conflict: {rebase_res.stderr.strip()}"
     except subprocess.CalledProcessError as e:
         return False, f"Git rebase error: {e.stderr.strip()}"
-    # 2. Commit
+    # 2. Commit（仅暂存依赖文件，避免把 .depsafe/、.agent_runner.py、.venv-fix-verify/ 等运行时产物提交进分支）
     try:
-        subprocess.run(["git", "add", "-A"], check=True, capture_output=True, text=True)
+        dep_files = [
+            f
+            for f in (
+                "requirements.txt",
+                "requirements.lock",
+                "pyproject.toml",
+                "Pipfile",
+                "poetry.lock",
+                "uv.lock",
+                "Pipfile.lock",
+            )
+            if Path(f).exists()
+        ]
+        if not dep_files:
+            return False, "No dependency files found to commit"
+        subprocess.run(["git", "add", *dep_files], check=True, capture_output=True, text=True)
         status = subprocess.run(["git", "diff", "--cached", "--quiet"], capture_output=True, text=True)
         if status.returncode == 0:
             return False, "No changes to commit"
@@ -178,7 +193,7 @@ def _regenerate_lockfile() -> tuple[bool, str]:
     lockfile_tools = [
         ("uv", ["uv", "lock"], ["pyproject.toml", "requirements.txt"]),
         ("poetry", ["poetry", "lock", "--no-update"], ["pyproject.toml"]),
-        ("pip-compile", ["pip-compile", "requirements.txt"], ["requirements.txt"]),
+        ("pip-compile", ["pip-compile", "requirements.txt", "-o", "requirements.lock", "--no-header", "--no-annotate"], ["requirements.txt"]),
         ("pipenv", ["pipenv", "lock"], ["Pipfile"]),
     ]
     for tool_name, cmd, required_files in lockfile_tools:

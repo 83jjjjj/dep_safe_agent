@@ -26,7 +26,8 @@ def get_repo_info() -> tuple[str, str]:
     ssh_match = re.match(r"git@github\.com:([^/]+)/([^/.]+)(\.git)?$", url)
     if ssh_match:
         return ssh_match.group(1), ssh_match.group(2)
-    https_match = re.match(r"https://github\.com/([^/]+)/([^/.]+)(\.git)?$", url)
+    # 容忍 setup_eval_env.sh 写入的内联认证 URL（https://x-access-token:TOKEN@github.com/owner/repo.git）
+    https_match = re.match(r"https://(?:[^@/]+@)?github\.com/([^/]+)/([^/.]+)(\.git)?$", url)
     if https_match:
         return https_match.group(1), https_match.group(2)
     raise RuntimeError(f"Cannot parse owner/repo from remote URL: {url}")

@@ -39,12 +39,14 @@ class DepSafeAgent:
             model=self.model,
             step_counter=self.step_counter,
             cost_budget=self.cost_budget,
+            project_root=self.project_root,
         )
         self._changelog_orchestrator = ChangelogOrchestrator(
             env=self.local_env,
             model=self.model,
             step_counter=self.step_counter,
             cost_budget=self.cost_budget,
+            project_root=self.project_root,
         )
 
         self.trajectory = Trajectory(self.project_root)
