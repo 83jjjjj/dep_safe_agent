@@ -19,6 +19,8 @@ agent:
 
     ### Step 2: 可达性分析
     对每个漏洞，从 CVE 描述中提取危险函数路径，调用 `analyze_reachability` 获取置信度（high/low/none）。
+    若漏洞触发条件不是函数调用（如属性赋值 `session.permanent = True`、配置变更），
+    必须把 CVE 描述中的触发条件原文填入 `target_description` 参数，供第二阶段语义代码搜索定位证据。
 
     ### Step 3: Changelog 与 Breaking Change 分析
     调用 `get_changelog` 获取当前版本到修复版本的变更日志。
@@ -28,9 +30,10 @@ agent:
     将 Step 2 的置信度、Step 3 的 breaking change 判定、以及 CVE 原始严重性传入 `assess_priority`，获得标准化优先级（P0-P4）及理由。
 
     ### Step 5: 尝试修复与验证
-    调用 `apply_fix_and_verify` 执行升级验证。
-    - **成功** → 进入 Step 6a。
-    - **失败** → 记录 AttemptRecord，可尝试其他兼容版本；若所有版本均失败 → 进入 Step 6b。
+    - **P0/P1/P2** → 调用 `apply_fix_and_verify` 执行升级验证。
+      - **成功** → 进入 Step 6a。
+      - **失败** → 记录 AttemptRecord 并直接进入 Step 6b。每个漏洞只尝试第一个 fixed 版本一次，不换版本重试；失败即视为已处理，走降级路径。
+    - **P3/P4** → 不修改代码、不创建 PR，直接进入 Step 7 生成报告。
 
     ### Step 6a: 创建 PR（修复成功路径）
     调用 `create_github_pr`，根据优先级传入对应参数（P1 必须传 breaking_changes 列表）。

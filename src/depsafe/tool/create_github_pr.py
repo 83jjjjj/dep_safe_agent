@@ -78,6 +78,65 @@ def _build_pr_body(
     return "\n".join(lines)
 
 
+def _ensure_labels(token: str, owner: str, repo: str, labels: list[str]) -> str | None:
+    """
+    确保仓库中存在指定标签，缺失则自动创建。
+
+    GitHub 创建 PR 时会静默丢弃不存在的标签，因此必须先补建。
+    201（创建成功）与 422（已存在）均视为正常。
+
+    Returns:
+        错误信息；成功返回 None。
+    """
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    for label in labels:
+        try:
+            response = requests.post(
+                f"https://api.github.com/repos/{owner}/{repo}/labels",
+                json={"name": label, "color": "d73a4a", "description": "Applied by DepSafe automated fix"},
+                headers=headers,
+                timeout=15,
+            )
+            if response.status_code not in (201, 422):
+                return f"Ensure label '{label}' failed: {response.status_code} {response.text[:200]}"
+        except requests.RequestException as e:
+            return f"Ensure label '{label}' failed: {type(e).__name__}: {e}"
+    return None
+
+
+def _apply_labels(token: str, owner: str, repo: str, pr_number: int, labels: list[str]) -> str | None:
+    """
+    PR 创建后通过 Issues API 追加标签。
+
+    实测 GitHub 的 POST/PATCH /pulls 会静默丢弃 labels 字段（细粒度 PAT），
+    唯一可靠的打标签方式是这个 add-labels 端点。
+
+    Returns:
+        错误信息；成功返回 None。
+    """
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    try:
+        response = requests.post(
+            f"https://api.github.com/repos/{owner}/{repo}/issues/{pr_number}/labels",
+            json={"labels": labels},
+            headers=headers,
+            timeout=15,
+        )
+        if response.status_code != 200:
+            return f"Apply labels {labels} to PR #{pr_number} failed: {response.status_code} {response.text[:200]}"
+    except requests.RequestException as e:
+        return f"Apply labels {labels} to PR #{pr_number} failed: {type(e).__name__}: {e}"
+    return None
+
+
 def _enable_auto_merge(token: str, pr_node_id: str) -> tuple[bool, str | None]:
     """
     通过 GraphQL API 开启 Auto-merge。
@@ -161,7 +220,11 @@ def create_github_pr(
         base_labels.append("auto-merge")
     elif priority == "P1":
         base_labels.append("needs-review")
-    # 5. 调用 REST API 创建 PR
+    # 5. 确保标签存在（GitHub 会静默丢弃不存在的标签）
+    label_errors: list[str] = []
+    if ensure_err := _ensure_labels(token, owner, repo, base_labels):
+        label_errors.append(ensure_err)
+    # 6. 调用 REST API 创建 PR
     api_url = f"https://api.github.com/repos/{owner}/{repo}/pulls"
     headers = {
         "Authorization": f"Bearer {token}",
@@ -183,12 +246,16 @@ def create_github_pr(
         pr_number = data["number"]
         pr_url = data["html_url"]
         pr_node_id = data.get("node_id")
-        # 6. 如果是 P0，尝试通过 GraphQL 开启 Auto-merge
-        auto_merge_warning = None
+        # 7. 创建后通过 Issues API 打标签（POST /pulls 的 labels 字段会被静默丢弃）
+        if apply_err := _apply_labels(token, owner, repo, pr_number, base_labels):
+            label_errors.append(apply_err)
+        # 8. 如果是 P0，尝试通过 GraphQL 开启 Auto-merge
         if priority == "P0" and pr_node_id:
             ok, err = _enable_auto_merge(token, pr_node_id)
             if not ok:
-                auto_merge_warning = f"Auto-merge failed: {err}"
-        return PRCreateResult(success=True, pr_url=pr_url, pr_number=pr_number, error=auto_merge_warning)
+                label_errors.append(f"Auto-merge failed: {err}")
+        return PRCreateResult(
+            success=True, pr_url=pr_url, pr_number=pr_number, error="; ".join(label_errors) or None
+        )
     except requests.RequestException as e:
         return PRCreateResult(success=False, error=f"{type(e).__name__}: {e}")

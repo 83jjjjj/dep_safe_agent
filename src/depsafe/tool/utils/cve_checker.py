@@ -45,13 +45,22 @@ def _query_osv(pkg: str, ver: str) -> list[Vulnerability]:
         if not severity and "database_specific" in vuln:
             severity = vuln["database_specific"].get("severity")
         fixed_ver = None
+        fixed_versions: list[str] = []
         for affected in vuln.get("affected", []):
             for r in affected.get("ranges", []):
                 if r.get("type") == "ECOSYSTEM":
                     for event in r.get("events", []):
                         if "fixed" in event:
-                            fixed_ver = event["fixed"]
-                            break
+                            fixed_versions.append(event["fixed"])
+        if fixed_versions:
+            # OSV 记录可能含多条 affected / 多段 range（如 GHSA 与 PYSEC 合并），
+            # 取「大于当前版本的最小修复版本」作为该版本的真实修复版本
+            try:
+                current = Version(ver)
+                newer = [v for v in fixed_versions if Version(v) > current]
+                fixed_ver = str(min(newer, key=Version)) if newer else str(max(fixed_versions, key=Version))
+            except InvalidVersion:
+                fixed_ver = fixed_versions[-1]
         desc = vuln.get("summary", "") or vuln.get("details", "")
         try:
             vulnerabilities.append(

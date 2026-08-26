@@ -5,6 +5,9 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends git && \
     rm -rf /var/lib/apt/lists/*
 
+# 容器以 root 运行，挂载的宿主仓库通常属主为其他 uid，git 默认拒绝操作
+RUN git config --system --add safe.directory '*'
+
 # 复制源码并安装 depsafe 及其依赖
 WORKDIR /opt/dep_safe_agent
 COPY . .

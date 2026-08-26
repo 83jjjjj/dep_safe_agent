@@ -84,6 +84,9 @@ def create_security_report(
     Returns:
         包含报告路径和状态的字典
     """
+    # LLM 工具调用参数经 model_dump() 序列化后 attempt 为 dict，需还原为 AttemptRecord
+    if isinstance(attempt, dict):
+        attempt = AttemptRecord.model_validate(attempt)
     report_path = Path("SECURITY_FIX_REPORT.md")
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     section = _build_report_section(

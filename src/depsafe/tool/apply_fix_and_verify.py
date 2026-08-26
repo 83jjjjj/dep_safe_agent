@@ -57,17 +57,8 @@ def _prepare_fix_branch(pkg_name: str, cve_id: str) -> str:
 
 
 def _push_changes(branch: str, pkg_name: str, cve_id: str) -> tuple[bool, str]:
-    """封装 Rebase、Commit 和 Push 操作"""
-    # 1. Rebase
-    try:
-        subprocess.run(["git", "fetch", "origin", "main"], check=True, capture_output=True, text=True)
-        rebase_res = subprocess.run(["git", "rebase", "origin/main"], capture_output=True, text=True)
-        if rebase_res.returncode != 0:
-            subprocess.run(["git", "rebase", "--abort"], capture_output=True, text=True)
-            return False, f"Rebase conflict: {rebase_res.stderr.strip()}"
-    except subprocess.CalledProcessError as e:
-        return False, f"Git rebase error: {e.stderr.strip()}"
-    # 2. Commit（仅暂存依赖文件，避免把 .depsafe/、.agent_runner.py、.venv-fix-verify/ 等运行时产物提交进分支）
+    """封装 Commit、Rebase 和 Push 操作"""
+    # 1. Commit（仅暂存依赖文件，避免把 .depsafe/、.agent_runner.py、.venv-fix-verify/ 等运行时产物提交进分支）
     try:
         dep_files = [
             f
@@ -92,6 +83,15 @@ def _push_changes(branch: str, pkg_name: str, cve_id: str) -> tuple[bool, str]:
         subprocess.run(["git", "commit", "-m", commit_msg], check=True, capture_output=True, text=True)
     except subprocess.CalledProcessError as e:
         return False, f"Git commit error: {e.stderr.strip()}"
+    # 2. Rebase（必须先提交再 rebase，工作区有未提交变更时 git rebase 会直接拒绝）
+    try:
+        subprocess.run(["git", "fetch", "origin", "main"], check=True, capture_output=True, text=True)
+        rebase_res = subprocess.run(["git", "rebase", "origin/main"], capture_output=True, text=True)
+        if rebase_res.returncode != 0:
+            subprocess.run(["git", "rebase", "--abort"], capture_output=True, text=True)
+            return False, f"Rebase conflict: {rebase_res.stderr.strip()}"
+    except subprocess.CalledProcessError as e:
+        return False, f"Git rebase error: {e.stderr.strip()}"
     # 3. Push
     try:
         subprocess.run(
@@ -406,7 +406,7 @@ def apply_fix_and_verify(
     # 5. 隔离环境验证：install → import → pip check
     venv_path = Path(".venv-fix-verify")
     venv_python = _ensure_venv(venv_path)
-    verify_ok, verify_reason, verify_err = _verify_installation(venv_python, pkg_name, target_version, module_name)
+    verify_ok, verify_err = _verify_installation(venv_python, pkg_name, target_version, module_name)
     if not verify_ok:
         return FixAttemptResult(
             pkg_name=pkg_name,

@@ -265,7 +265,7 @@ class ReachabilityAnalyzer:
             cost_budget=self.cost_budget,
             project_root=self.project_root,
             sub_task_name=f"explore task on {file_path} for dynamic calls",
-            step_limit=2,
+            step_limit=5,
         )
         system_prompt = """\
 你是一个专业的代码安全分析师。
@@ -281,9 +281,9 @@ class ReachabilityAnalyzer:
 2. `submit_result`: 当你收集到足够信息后，调用此工具提交最终结论。
 
 工作流程：
-1. 使用 `bash` 执行 grep 搜索相关变量的定义（最多 2 次）。
-2. 分析搜索结果，确认动态调用实际指向哪些函数。
-3. 一旦你有了最终结论，**必须**调用 `submit_result` 工具。
+1. 使用 `bash` 执行 grep 搜索相关变量的定义（最多 3 次）。
+2. 如搜索结果不完整，用 sed/cat 查看上下文确认（最多 2 次）。
+3. 一旦确认动态调用实际指向哪些函数，**立即**调用 `submit_result` 提交结论，禁止继续搜索或重复相同命令。
 
 `result` 参数必须包含以下字段：
 - `resolved_calls`: 列表，每项包含：
@@ -338,7 +338,7 @@ class ReachabilityAnalyzer:
             cost_budget=self.cost_budget,
             project_root=self.project_root,
             sub_task_name=f"explore task on {file_path} for non-call vulns",
-            step_limit=3,
+            step_limit=5,
         )
         system_prompt = """\
 你是一个专业的代码安全分析师。
@@ -354,9 +354,9 @@ class ReachabilityAnalyzer:
 2. `submit_result`: 当你收集到足够信息后，调用此工具提交最终结论。
 
 工作流程：
-1. 使用 `bash` 执行 grep 在目标文件中搜索关键词（最多 2 次）。
-2. 如找到相关行，用 cat 查看上下文（最多 1 次）。
-3. 一旦你有了最终结论，**必须**调用 `submit_result` 工具。
+1. 使用 `bash` 执行 grep 在目标文件中搜索关键词（最多 3 次）。
+2. 如找到相关行，用 sed/cat 查看上下文确认（最多 2 次）。
+3. 一旦确认证据（或确认不可达），**立即**调用 `submit_result` 提交结论，禁止继续搜索或重复相同命令。
 
 `result` 参数必须包含以下字段：
 - `reachable`: true / false

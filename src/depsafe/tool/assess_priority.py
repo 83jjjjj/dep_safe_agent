@@ -59,6 +59,9 @@ def _parse_cvss_severity(cvss_vector: str) -> str:
         return "CRITICAL"
     if high_count >= 2 or (scope_changed and high_count >= 1):
         return "HIGH"
+    if high_count == 1 and c == "H" and av == "N" and not scope_changed:
+        # 典型 C:H/I:N/A:N + AV:N（如 CVE-2023-30861，官方评分 7.5）应为 HIGH
+        return "HIGH"
     if high_count >= 1:
         return "MODERATE"
     return "LOW"

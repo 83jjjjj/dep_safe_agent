@@ -5,6 +5,7 @@ import traceback
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from depsafe.budget import TokenBudget
 from depsafe.checkpointer import SubTrajectory
 
 from depsafe.exceptions import (
@@ -14,7 +15,7 @@ from depsafe.exceptions import (
 )
 
 if TYPE_CHECKING:
-    from depsafe.budget import CostBudget, StepCounter, TokenBudget
+    from depsafe.budget import CostBudget, StepCounter
     from depsafe.environment.local import LocalEnvironment
     from depsafe.model import LitellmModel
 
@@ -50,6 +51,7 @@ class SubAgent:
         self.token_budget = TokenBudget(self.model.model_name, usage_ratio=0.7)
         self.step_limit = step_limit
         self.n_calls = 0
+        self.n_consecutive_format_errors = 0
         self.max_consecutive_format_errors = 3
         self.trajectory = SubTrajectory(project_root=project_root, sub_task_name=sub_task_name)
 

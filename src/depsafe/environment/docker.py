@@ -239,7 +239,15 @@ if __name__ == "__main__":
                     from depsafe.tool.apply_fix_and_verify import FixAttemptResult
 
                     fix_result = FixAttemptResult.model_validate(parsed.get("output"))
-                    self.vuln_budget.mark_covered([Vulnerability(pkg_name=fix_result.pkg_name, cve_id=fix_result.cve_id)])
+                    self.vuln_budget.mark_covered(
+                        [
+                            Vulnerability(
+                                pkg=fix_result.pkg_name,
+                                cur_ver=fix_result.attempted_version,
+                                cve_id=fix_result.cve_id,
+                            )
+                        ]
+                    )
                 except ValidationError as e:
                     return {
                         "output": parsed.get("output"),

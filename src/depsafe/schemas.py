@@ -41,6 +41,14 @@ class AnalyzeReachabilityInput(BaseModel):
         ...,
         description="需要追踪的目标函数完整路径列表，例如 ['requests.get', 'os.system']",
     )
+    target_description: str | None = Field(
+        None,
+        description=(
+            "漏洞触发条件的自然语言描述，例如 'session.permanent 被设置为 True' 或 'yaml.load 使用了不安全的 Loader'。"
+            "当触发条件不是函数调用（如属性赋值、配置变更）时必填，用于第二阶段语义代码搜索定位证据；"
+            "若触发条件本身就是函数调用则可省略。"
+        ),
+    )
 
 
 _reach_params = AnalyzeReachabilityInput.model_json_schema()
