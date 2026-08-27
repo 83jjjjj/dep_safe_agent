@@ -1,6 +1,7 @@
 import hashlib
 import json
 import logging
+import os
 import subprocess
 from pathlib import Path
 
@@ -89,6 +90,25 @@ if __name__ == "__main__":
     def _init_container(self):
         logger.info(f"清理残余容器: {self.container_name}")
         subprocess.run([self.docker_bin, "rm", "-f", self.container_name], capture_output=True, text=True)
+        # 代理透传：宿主机环境变量 DEPSAFE_DOCKER_PROXY（如 http://172.27.64.1:7890）
+        # 以 HTTP_PROXY/HTTPS_PROXY 传入容器，供容器内 git/pip 访问被墙站点
+        proxy = os.getenv("DEPSAFE_DOCKER_PROXY")
+        proxy_args: list[str] = []
+        if proxy:
+            proxy_args = [
+                "-e",
+                f"HTTP_PROXY={proxy}",
+                "-e",
+                f"HTTPS_PROXY={proxy}",
+                "-e",
+                f"http_proxy={proxy}",
+                "-e",
+                f"https_proxy={proxy}",
+                "-e",
+                "NO_PROXY=localhost,127.0.0.1",
+                "-e",
+                "no_proxy=localhost,127.0.0.1",
+            ]
         cmd = [
             self.docker_bin,
             "run",
@@ -99,6 +119,7 @@ if __name__ == "__main__":
             f"{self.project_root}:{self.cwd}",
             "-w",
             self.cwd,
+            *proxy_args,
             *self.run_args,
             self.image,
             "bash",
@@ -239,15 +260,19 @@ if __name__ == "__main__":
                     from depsafe.tool.apply_fix_and_verify import FixAttemptResult
 
                     fix_result = FixAttemptResult.model_validate(parsed.get("output"))
-                    self.vuln_budget.mark_covered(
-                        [
-                            Vulnerability(
-                                pkg=fix_result.pkg_name,
-                                cur_ver=fix_result.attempted_version,
-                                cve_id=fix_result.cve_id,
-                            )
-                        ]
-                    )
+                    # 设计约定：每个漏洞只尝试第一个 fixed 版本一次，失败即视为已处理；
+                    # 唯一例外是依赖约束冲突（recoverable）——允许以同一目标版本补 extra_pins 后重试，
+                    # 故不标记 covered，漏洞留在池中
+                    if fix_result.success or not fix_result.recoverable:
+                        self.vuln_budget.mark_covered(
+                            [
+                                Vulnerability(
+                                    pkg=fix_result.pkg_name,
+                                    cur_ver=fix_result.attempted_version,
+                                    cve_id=fix_result.cve_id,
+                                )
+                            ]
+                        )
                 except ValidationError as e:
                     return {
                         "output": parsed.get("output"),

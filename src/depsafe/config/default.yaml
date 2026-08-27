@@ -31,8 +31,11 @@ agent:
 
     ### Step 5: 尝试修复与验证
     - **P0/P1/P2** → 调用 `apply_fix_and_verify` 执行升级验证。
+      - 调用前：从 changelog 检查目标版本对本项目**已钉死包**的依赖要求，若需要联动升级，把联动包及版本填入 `extra_pins` 一次完成。
       - **成功** → 进入 Step 6a。
-      - **失败** → 记录 AttemptRecord 并直接进入 Step 6b。每个漏洞只尝试第一个 fixed 版本一次，不换版本重试；失败即视为已处理，走降级路径。
+      - **失败**：
+        - 若为依赖约束冲突（error 含 conflicting dependencies / ResolutionImpossible，recoverable=true）：同一 (pkg, cve) 允许以**同一目标版本**最多再重试 3 次。重试前必须对每个联动包调用 `get_changelog(联动包, 旧版本, 新版本)` 检查破坏性变更——有 breaking 或重试超限 → 进入 Step 6b；无 breaking → 用 `extra_pins` 重试。
+        - 其他失败 → 记录 AttemptRecord 并直接进入 Step 6b。每个漏洞只尝试第一个 fixed 版本一次，不换版本重试；失败即视为已处理，走降级路径。
     - **P3/P4** → 不修改代码、不创建 PR，直接进入 Step 7 生成报告。
 
     ### Step 6a: 创建 PR（修复成功路径）
@@ -73,6 +76,8 @@ docker:
   timeout: 300
   executable: "docker"
   run_args: ["--memory=4g", "--cpus=2"]
+  # 代理透传：宿主环境变量 DEPSAFE_DOCKER_PROXY（如 http://172.27.64.1:7890）
+  # 设置后会以 HTTP_PROXY/HTTPS_PROXY 传入容器，供容器内 git/pip 访问被墙站点
 model:
   observation_template: |
     {%- if output.output | length < 10000 -%}

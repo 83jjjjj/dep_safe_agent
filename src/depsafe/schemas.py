@@ -209,6 +209,14 @@ class ApplyFixAndVerifyInput(BaseModel):
     module_name: str = Field(
         ..., description="包的导入模块名。当包名与 import 名不一致时必填，如包名 'Pillow' 对应模块名 'PIL'"
     )
+    extra_pins: dict[str, str] | None = Field(
+        None,
+        description=(
+            "联动升级的钉死依赖清单，如 {'werkzeug': '2.3.0'}。"
+            "当目标版本要求本项目其他钉死依赖升级时必填；"
+            "联动包新版本必须先经 get_changelog 确认无破坏性变更。"
+        ),
+    )
 
 
 _fix_params = ApplyFixAndVerifyInput.model_json_schema()

@@ -18,9 +18,13 @@ class FixAttemptResult(BaseModel):
     error: str | None = Field(None, description="错误日志")
     branch_name: str | None = Field(None, description="创建的修复分支名（仅当修改文件成功时返回）")
     test_skipped: bool = Field(False, description="是否跳过了测试执行（因无测试套件）")
+    recoverable: bool = Field(
+        False,
+        description="失败是否可恢复：仅依赖约束冲突为 True，允许以同一目标版本补联动包后重试",
+    )
     suggested_next_action: str | None = Field(
         None,
-        description="建议的下一步操作: CREATE_REPORT_AND_ISSUE / MANUAL_REVIEW",
+        description="建议的下一步操作: CREATE_REPORT_AND_ISSUE / RETRY_WITH_PINS / MANUAL_REVIEW",
     )
 
 
@@ -206,6 +210,20 @@ def _regenerate_lockfile() -> tuple[bool, str]:
     return False, "No lockfile tool available (uv/poetry/pip-compile/pipenv)"
 
 
+def _classify_lock_error(lock_error: str) -> tuple[bool, str]:
+    """
+    判断锁文件失败是否为依赖约束冲突（可恢复）。
+
+    依赖约束冲突（如钉死的联动包不满足主包新版本的依赖要求）可以通过补
+    extra_pins 重试解决；其他失败（工具缺失、网络错误等）不可恢复。
+
+    Returns:
+        (是否约束冲突, 建议的下一步操作)
+    """
+    is_conflict = "ResolutionImpossible" in lock_error or "conflicting dependencies" in lock_error
+    return is_conflict, "RETRY_WITH_PINS" if is_conflict else "MANUAL_REVIEW"
+
+
 def _ensure_venv(venv_path: Path) -> Path:
     """确保临时虚拟环境存在，返回其 python 可执行文件路径"""
     if not venv_path.exists():
@@ -332,6 +350,7 @@ def apply_fix_and_verify(
     cve_id: str,
     target_version: str,
     module_name: str,
+    extra_pins: dict[str, str] | None = None,
 ) -> FixAttemptResult:
     """
     尝试将指定包升级到 target_version 并验证，仅执行单次尝试。
@@ -341,6 +360,8 @@ def apply_fix_and_verify(
         cve_id: CVE 编号，如 'CVE-2024-1234'
         target_version: 目标修复版本，如 '2.3.1'
         module_name: 包的导入模块名。存在当包名与 import 名不一致的情况
+        extra_pins: 联动升级的钉死依赖清单，如 {'werkzeug': '2.3.0'}。
+            当目标版本要求本项目其他钉死依赖升级时传入，随主包一起更新。
 
     Returns:
         FixAttemptResult: 包含成功/失败状态、详细原因及建议的下一步操作
@@ -367,33 +388,44 @@ def apply_fix_and_verify(
             error=f"Failed to create branch: {e.stderr.strip()}",
             suggested_next_action="CREATE_REPORT_AND_ISSUE",
         )
-    # 3. 更新依赖文件
-    updated = False
+    # 3. 更新依赖文件（主包 + 联动包 extra_pins）
     if Path("pyproject.toml").exists():
-        ok, err = _update_pyproject(pkg_name, target_version)
-        if ok:
-            updated = True
+        update_func = _update_pyproject
     elif Path("requirements.txt").exists():
-        ok, err = updated = _update_requirements(pkg_name, target_version)
-        if ok:
-            updated = True
+        update_func = _update_requirements
     elif Path("Pipfile").exists():
-        ok, err = updated = _update_pipfile(pkg_name, target_version)
-        if ok:
-            updated = True
-    if not updated:
+        update_func = _update_pipfile
+    else:
+        update_func = None
+    if update_func is None:
         return FixAttemptResult(
             pkg_name=pkg_name,
             cve_id=cve_id,
             success=False,
             attempted_version=target_version,
-            error=err,
+            error="No dependency file found (pyproject.toml / requirements.txt / Pipfile)",
             branch_name=branch_name,
             suggested_next_action="CREATE_REPORT_AND_ISSUE",
         )
+    pins: list[tuple[str, str]] = [(pkg_name, target_version)]
+    pins += [(pin_pkg, pin_ver) for pin_pkg, pin_ver in (extra_pins or {}).items() if pin_pkg != pkg_name]
+    for pin_pkg, pin_ver in pins:
+        ok, err = update_func(pin_pkg, pin_ver)
+        if not ok:
+            label = "主包" if pin_pkg == pkg_name else "联动包"
+            return FixAttemptResult(
+                pkg_name=pkg_name,
+                cve_id=cve_id,
+                success=False,
+                attempted_version=target_version,
+                error=f"{label} {pin_pkg} 更新失败: {err or '未在依赖文件中找到该包的声明行'}",
+                branch_name=branch_name,
+                suggested_next_action="CREATE_REPORT_AND_ISSUE",
+            )
     # 4. 生成锁文件
     lock_success, lock_error = _regenerate_lockfile()
     if not lock_success:
+        recoverable, next_action = _classify_lock_error(lock_error)
         return FixAttemptResult(
             pkg_name=pkg_name,
             cve_id=cve_id,
@@ -401,7 +433,8 @@ def apply_fix_and_verify(
             attempted_version=target_version,
             error=lock_error,
             branch_name=branch_name,
-            suggested_next_action="MANUAL_REVIEW",
+            recoverable=recoverable,
+            suggested_next_action=next_action,
         )
     # 5. 隔离环境验证：install → import → pip check
     venv_path = Path(".venv-fix-verify")
