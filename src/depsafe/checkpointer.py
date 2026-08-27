@@ -178,7 +178,8 @@ class SubTrajectory:
     def __init__(self, project_root: Path, sub_task_name: str):
         self.project_root = project_root.resolve()
         self.dir = project_root / self.SUB_DIR
-        self.sub_task_name = sub_task_name
+        # 任务名拼入文件名，必须消毒路径分隔符（如 file_path="./app.py" 会引入 '/' 导致保存失败）
+        self.sub_task_name = sub_task_name.replace("/", "-")
 
     def save(self, messages: list[dict], budget_state: dict, status: str = "completed", exit_reason: str | None = None):
         """保存 SubAgent 执行轨迹（覆盖写入，无需原子操作——丢了就丢了）"""
