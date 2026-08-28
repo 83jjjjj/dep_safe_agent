@@ -1,4 +1,22 @@
-from depsafe.tool.apply_fix_and_verify import _has_tests, _update_pipfile, _update_pyproject, _update_requirements
+from depsafe.tool.apply_fix_and_verify import (
+    _has_tests,
+    _run_tests,
+    _update_pipfile,
+    _update_pyproject,
+    _update_requirements,
+)
+
+
+class TestRunTests:
+    def test_run_tests_uses_venv_python(self, tmp_path, monkeypatch):
+        """测试必须用验证 venv 的 python 执行（系统 python 没有项目依赖）"""
+        monkeypatch.chdir(tmp_path)
+        fake_py = tmp_path / "fake_python"
+        fake_py.write_text("#!/bin/sh\necho 'fake unittest ok'\nexit 0\n")
+        fake_py.chmod(0o755)
+        ok, out = _run_tests(fake_py)
+        assert ok is True
+        assert "fake unittest ok" in out
 
 
 class TestHasTests:
@@ -18,7 +36,7 @@ class TestUpdateRequirements:
         monkeypatch.chdir(tmp_path)
         req = tmp_path / "requirements.txt"
         req.write_text("flask==2.3.1\nclick>=8.0\n")
-        assert _update_requirements("flask", "2.3.3")
+        assert _update_requirements("flask", "2.3.3")[0] is True
         content = req.read_text()
         assert "flask==2.3.3" in content
         assert "click>=8.0" in content
@@ -27,7 +45,7 @@ class TestUpdateRequirements:
         monkeypatch.chdir(tmp_path)
         req = tmp_path / "requirements.txt"
         req.write_text("django>=4.0\n")
-        assert _update_requirements("flask", "2.3.3") is False
+        assert _update_requirements("flask", "2.3.3")[0] is False
 
 
 class TestUpdatePyproject:
@@ -43,7 +61,7 @@ dependencies = [
     "click>=8.0",
 ]
 """)
-        assert _update_pyproject("flask", "2.3.3") is True
+        assert _update_pyproject("flask", "2.3.3")[0] is True
         content = f.read_text()
         assert "flask==2.3.3" in content
         assert "click>=8.0" in content
@@ -57,7 +75,7 @@ dependencies = [
 flask = "^2.3.0"
 click = "^8.0"
 """)
-        assert _update_pyproject("flask", "2.3.3") is True
+        assert _update_pyproject("flask", "2.3.3")[0] is True
         content = f.read_text()
         assert 'flask = "==2.3.3"' in content
         assert 'click = "^8.0"' in content
@@ -73,7 +91,7 @@ class TestUpdatePipfile:
 flask = "==2.3.1"
 requests = ">=2.25.0"
 """)
-        assert _update_pipfile("flask", "2.3.3") is True
+        assert _update_pipfile("flask", "2.3.3")[0] is True
         content = f.read_text()
         assert 'flask = "==2.3.3"' in content
         assert 'requests = ">=2.25.0"' in content
@@ -86,6 +104,6 @@ requests = ">=2.25.0"
 [dev-packages]
 pytest = "==7.0.0"
 """)
-        assert _update_pipfile("pytest", "8.0.0") is True
+        assert _update_pipfile("pytest", "8.0.0")[0] is True
         content = f.read_text()
         assert 'pytest = "==8.0.0"' in content

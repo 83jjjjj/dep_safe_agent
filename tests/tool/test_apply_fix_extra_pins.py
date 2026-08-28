@@ -2,6 +2,30 @@
 import depsafe.tool.apply_fix_and_verify as m
 
 
+class TestVerifyInstallation:
+    def test_installs_from_requirements_when_present(self, tmp_path, monkeypatch):
+        """有 requirements.txt 时按文件安装，保证验证环境与钉死版本一致"""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "requirements.txt").write_text("flask==2.3.2\nwerkzeug==3.1.8\n")
+        seen: list[str] = []
+        monkeypatch.setattr(m, "_install_package", lambda py, spec: seen.append(spec) or (True, ""))
+        monkeypatch.setattr(m, "_verify_import", lambda *a: (True, ""))
+        monkeypatch.setattr(m, "_run_pip_check", lambda *a: (True, ""))
+        ok, _ = m._verify_installation(tmp_path / "py", "flask", "2.3.2", "flask")
+        assert ok is True
+        assert seen == ["-r requirements.txt"]
+
+    def test_falls_back_to_single_package_without_requirements(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        seen: list[str] = []
+        monkeypatch.setattr(m, "_install_package", lambda py, spec: seen.append(spec) or (True, ""))
+        monkeypatch.setattr(m, "_verify_import", lambda *a: (True, ""))
+        monkeypatch.setattr(m, "_run_pip_check", lambda *a: (True, ""))
+        ok, _ = m._verify_installation(tmp_path / "py", "flask", "2.3.2", "flask")
+        assert ok is True
+        assert seen == ["flask==2.3.2"]
+
+
 class TestClassifyLockError:
     def test_resolution_impossible_is_conflict(self):
         assert m._classify_lock_error("pip-compile lock failed: ... ResolutionImpossible ...") == (

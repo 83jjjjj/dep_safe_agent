@@ -233,11 +233,11 @@ def _ensure_venv(venv_path: Path) -> Path:
     return venv_path / "bin" / "python"
 
 
-def _install_package(venv_python: Path, pkg_name: str, version: str) -> tuple[bool, str]:
-    """在隔离 venv 中安装包，返回 (成功, 错误信息)"""
+def _install_package(venv_python: Path, spec: str) -> tuple[bool, str]:
+    """在隔离 venv 中安装，spec 支持 'pkg==version' 或 '-r requirements.txt'，返回 (成功, 错误信息)"""
     try:
         result = subprocess.run(
-            [str(venv_python), "-m", "pip", "install", f"{pkg_name}=={version}", "--quiet"],
+            [str(venv_python), "-m", "pip", "install", spec, "--quiet"],
             capture_output=True,
             text=True,
             timeout=120,
@@ -246,7 +246,7 @@ def _install_package(venv_python: Path, pkg_name: str, version: str) -> tuple[bo
             return True, ""
         return False, result.stderr.strip()
     except subprocess.TimeoutExpired:
-        return False, f"pip install {pkg_name}=={version} timed out (2 minutes)"
+        return False, f"pip install {spec} timed out (2 minutes)"
     except Exception as e:
         return False, f"pip install error: {e}"
 
@@ -292,7 +292,13 @@ def _verify_installation(venv_python: Path, pkg_name: str, version: str, module_
     递进式安装验证：install → import → pip check
     Returns: (success, error)
     """
-    ok, err = _install_package(venv_python, pkg_name, version)
+    # 优先按项目依赖文件安装，保证验证环境与项目钉死版本一致（含联动 pin）；
+    # 无 requirements.txt 时退回单包装（pyproject.toml / Pipfile 项目）
+    if Path("requirements.txt").exists():
+        install_spec = "-r requirements.txt"
+    else:
+        install_spec = f"{pkg_name}=={version}"
+    ok, err = _install_package(venv_python, install_spec)
     if not ok:
         return False, f"pip install failed: {err}"
     ok, err = _verify_import(venv_python, pkg_name, module_name)
@@ -316,12 +322,15 @@ def _has_tests() -> bool:
     return False
 
 
-def _run_tests() -> tuple[bool, str]:
-    """运行测试，返回 (是否通过, 输出日志)。优先 pytest，兜底 unittest"""
-    if _has_tool("pytest"):
+def _run_tests(venv_python: Path) -> tuple[bool, str]:
+    """
+    在隔离验证 venv 中运行测试（项目依赖已安装于该 venv），返回 (是否通过, 输出日志)。
+    优先 venv 内的 pytest，兜底 unittest。不能用系统 python——其环境没有项目依赖。
+    """
+    if (venv_python.parent / "pytest").exists():
         try:
             result = subprocess.run(
-                ["pytest", "--tb=short", "-q"],
+                [str(venv_python), "-m", "pytest", "--tb=short", "-q"],
                 capture_output=True,
                 text=True,
                 timeout=300,
@@ -331,18 +340,18 @@ def _run_tests() -> tuple[bool, str]:
             return False, "Test execution timed out (5 minutes)"
         except Exception as e:
             return False, f"pytest execution error: {e}"
-    if _has_tool("python"):
-        try:
-            result = subprocess.run(
-                [sys.executable, "-m", "unittest", "discover", "-v"],
-                capture_output=True,
-                text=True,
-                timeout=300,
-            )
-            return result.returncode == 0, result.stdout + result.stderr
-        except Exception as e:
-            return False, f"unittest execution error: {e}"
-    return False, "No test runner available (pytest/python)"
+    try:
+        result = subprocess.run(
+            [str(venv_python), "-m", "unittest", "discover", "-v"],
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        return result.returncode == 0, result.stdout + result.stderr
+    except subprocess.TimeoutExpired:
+        return False, "Test execution timed out (5 minutes)"
+    except Exception as e:
+        return False, f"unittest execution error: {e}"
 
 
 def apply_fix_and_verify(
@@ -471,7 +480,7 @@ def apply_fix_and_verify(
             branch_name=branch_name,
             test_skipped=True,
         )
-    test_passed, test_output = _run_tests()
+    test_passed, test_output = _run_tests(venv_python)
     if test_passed:
         push_ok, push_err = _push_changes(branch_name, pkg_name, cve_id)
         if not push_ok:
