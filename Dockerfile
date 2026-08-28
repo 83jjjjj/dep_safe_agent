@@ -12,6 +12,8 @@ RUN git config --system --add safe.directory '*'
 WORKDIR /opt/dep_safe_agent
 COPY . .
 RUN pip install --no-cache-dir .
+# pipenv：Pipfile 项目的锁文件再生（apply_fix_and_verify 的 _regenerate_lockfile 需要）
+RUN pip install --no-cache-dir pipenv
 
 # Agent 实际操作目标项目的工作目录
 WORKDIR /workspace
