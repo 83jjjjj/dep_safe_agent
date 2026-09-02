@@ -148,10 +148,9 @@ class DepSafeAgent:
         self.config["task"] = task or ""
         self.config.update(platform.uname()._asdict())
         resuming = self._try_recover()
-        # 外层控制每次循环只处理vuln_limit个漏洞（多轮：漏洞池清空或预算耗尽才终止）。
-        # 设计约定：每轮结束后若仍有未处理漏洞（overflow/未覆盖），reset 消息与本地
-        # 预算后开启下一轮——任务目标与消息列表重置是合理的（漏洞间独立）；
-        # covered/overflow 保留在 vuln_budget 中驱动下一轮推进。
+        # 外层控制每次循环只处理vuln_limit个漏洞（多轮：仅漏洞池清空或轮次超限才终止；
+        # 预算耗尽（step/token/cost）且仍有漏洞 → 视为本轮已完成，轮转开启下一轮：
+        # 消息与本地预算重置，covered/overflow 保留在 vuln_budget 中驱动下一轮推进）。
         round_count = 0
         max_rounds = self.config.get("max_rounds", 8)  # 防连续轮次死循环的兜底
         while True:
@@ -199,15 +198,10 @@ class DepSafeAgent:
                 if self.messages[-1].get("role") == "exit":
                     break
             if self.messages[-1].get("role") == "exit":
-                # 轮次结束：漏洞池清空、任一预算耗尽或轮次超限 → 真正终止；
-                # 否则开启下一轮（外层 reset 消息/任务目标，扫描器从 overflow 继续）
-                if (
-                    self.vuln_budget.is_all_done()
-                    or self.step_counter.is_exhausted()
-                    or self.token_budget.is_exhausted()
-                    or self.cost_budget.is_exhausted()
-                    or round_count > max_rounds
-                ):
+                # 轮次结束：仅当漏洞池清空或轮次超限 → 真正终止；
+                # 否则（含预算耗尽——LimitsExceeded 也是轮次结束信号）开启下一轮：
+                # 外层 reset 消息/任务目标与预算，扫描器从 overflow/剩余漏洞继续
+                if self.vuln_budget.is_all_done() or round_count > max_rounds:
                     break
                 # 轮转前归档本轮轨迹：checkpoint.json 将被下一轮覆盖，
                 # 判定（judge）需要跨轮证据（每轮的 scan/fix/PR 都算数）
