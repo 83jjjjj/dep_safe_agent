@@ -54,9 +54,9 @@ eval = [
 depsafe = "depsafe.run.hello_world:app"
 
 [project.urls]
-Homepage = "https://github.com/83jjjjj/dep_safe"
-Repository = "https://github.com/83jjjjj/dep_safe"
-Issues = "https://github.com/83jjjjj/dep_safe/issues"
+Homepage = "https://github.com/83jjjjj/dep_safe_agent"
+Repository = "https://github.com/83jjjjj/dep_safe_agent"
+Issues = "https://github.com/83jjjjj/dep_safe_agent/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/depsafe"]
