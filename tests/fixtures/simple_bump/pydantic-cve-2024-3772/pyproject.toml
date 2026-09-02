@@ -1,0 +1,12 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "eval-fixture"
+version = "0.1.0"
+description = "DepSafe 评估样本"
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic==1.10.2",
+]

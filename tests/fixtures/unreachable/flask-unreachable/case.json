@@ -1,0 +1,14 @@
+{
+ "name": "flask-unreachable",
+ "behavior_class": "unreachable",
+ "pkg": "flask",
+ "vulnerable_version": "2.3.1",
+ "dep_file": "requirements.txt",
+ "must_fix": false,
+ "expect_pr": false,
+ "has_tests": false,
+ "notes": "依赖声明存在漏洞但 app.py 纯标准库、完全不 import flask，触发条件不可达 → 预期 P4 不改代码不建 PR，仅报告",
+ "target_cves": [
+  "CVE-2026-27205"
+ ]
+}

@@ -1,0 +1,14 @@
+{
+ "name": "flask-2.2.5-before-first-request",
+ "behavior_class": "breaking_upgrade",
+ "pkg": "flask",
+ "vulnerable_version": "2.2.5",
+ "dep_file": "requirements.txt",
+ "must_fix": false,
+ "expect_pr": false,
+ "has_tests": true,
+ "notes": "flask 2.2.5 受 CVE-2026-27205 影响，修复版 3.1.3 移除了 before_first_request（flask 3.0 起删除），项目代码正在使用该 API → 修复跨大版本后 import app 即 AttributeError（实测）→ 回归测试失败 → apply_fix 失败 → 正确降级（Issue + 报告）。验证「破坏性变更导致测试无法通过」的降级路径",
+ "target_cves": [
+  "CVE-2026-27205"
+ ]
+}

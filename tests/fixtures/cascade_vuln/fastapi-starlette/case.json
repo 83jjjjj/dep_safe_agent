@@ -1,0 +1,30 @@
+{
+ "name": "fastapi-starlette",
+ "behavior_class": "cascade_vuln",
+ "pkgs": [
+  {
+   "pkg": "fastapi",
+   "vulnerable_version": "0.95.0"
+  },
+  {
+   "pkg": "starlette",
+   "vulnerable_version": "0.26.1"
+  }
+ ],
+ "dep_file": "requirements.txt",
+ "must_fix": true,
+ "expect_pr": true,
+ "has_tests": false,
+ "notes": "约束链（已实测）：fastapi 0.95 要求 starlette<0.27，修复版 0.109.1 要求 starlette>=0.36.3，与钉死的 0.26.1 冲突；starlette 自身 8 个 CVE。两个钉死依赖需协同升级（extra_pins 机制），不带测试套件",
+ "target_cves": [
+  "CVE-2024-24762",
+  "CVE-2026-54283",
+  "CVE-2023-29159",
+  "CVE-2024-47874",
+  "CVE-2025-54121",
+  "CVE-2026-48710",
+  "CVE-2026-48817",
+  "CVE-2026-48818",
+  "CVE-2026-54282"
+ ]
+}

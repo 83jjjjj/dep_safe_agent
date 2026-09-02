@@ -1,0 +1,12 @@
+{
+ "name": "itsdangerous-clean",
+ "behavior_class": "clean",
+ "pkg": "itsdangerous",
+ "vulnerable_version": "2.1.0",
+ "dep_file": "requirements.txt",
+ "must_fix": false,
+ "expect_pr": false,
+ "has_tests": false,
+ "notes": "依赖版本无已知漏洞（OSV 现查干净）→ 预期空报告 + 正常终止，无修复分支无 PR",
+ "target_cves": []
+}

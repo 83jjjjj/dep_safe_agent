@@ -1,0 +1,24 @@
+{
+ "name": "flask-pyyaml",
+ "behavior_class": "multi_vuln",
+ "pkgs": [
+  {
+   "pkg": "flask",
+   "vulnerable_version": "2.3.1"
+  },
+  {
+   "pkg": "pyyaml",
+   "vulnerable_version": "5.3.1"
+  }
+ ],
+ "dep_file": "requirements.txt",
+ "must_fix": true,
+ "expect_pr": true,
+ "has_tests": false,
+ "notes": "多漏洞包案例：各包独立分支独立 PR；跨包协同属人工合并职责，不带测试套件（每分支只含部分修复，全量断言会误伤）",
+ "target_cves": [
+  "CVE-2023-30861",
+  "CVE-2026-27205",
+  "CVE-2020-14343"
+ ]
+}

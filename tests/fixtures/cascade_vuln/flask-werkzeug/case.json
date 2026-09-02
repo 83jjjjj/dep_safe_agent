@@ -1,0 +1,30 @@
+{
+ "name": "flask-werkzeug",
+ "behavior_class": "cascade_vuln",
+ "pkgs": [
+  {
+   "pkg": "flask",
+   "vulnerable_version": "2.3.1"
+  },
+  {
+   "pkg": "werkzeug",
+   "vulnerable_version": "2.3.0"
+  }
+ ],
+ "dep_file": "requirements.txt",
+ "must_fix": true,
+ "expect_pr": true,
+ "has_tests": false,
+ "notes": "约束链（已实测）：flask→2.3.2 要求 werkzeug>=2.3.3，与钉死的 2.3.0 冲突；werkzeug 自身 7 个 CVE 修复于 2.3.8。两个钉死依赖需协同升级（extra_pins 机制），不带测试套件",
+ "target_cves": [
+  "CVE-2026-27205",
+  "CVE-2023-30861",
+  "CVE-2026-27199",
+  "CVE-2023-46136",
+  "CVE-2024-34069",
+  "CVE-2024-49766",
+  "CVE-2024-49767",
+  "CVE-2025-66221",
+  "CVE-2026-21860"
+ ]
+}

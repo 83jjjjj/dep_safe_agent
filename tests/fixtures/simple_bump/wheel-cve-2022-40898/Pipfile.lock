@@ -1,0 +1,11 @@
+{
+  "_meta": {
+    "hash": {"sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+    "requires": {"python_version": "3.12"},
+    "sources": [{"url": "https://pypi.org/simple", "name": "pypi", "verify_ssl": true}]
+  },
+  "default": {
+    "wheel": {"version": "==0.38.0", "hashes": []}
+  },
+  "develop": {}
+}

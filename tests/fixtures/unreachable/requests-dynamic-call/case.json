@@ -1,0 +1,17 @@
+{
+ "name": "requests-dynamic-call",
+ "behavior_class": "unreachable",
+ "pkg": "requests",
+ "vulnerable_version": "2.25.1",
+ "dep_file": "requirements.txt",
+ "must_fix": false,
+ "expect_pr": false,
+ "has_tests": false,
+ "notes": "getattr(requests, method) 的属性名来自函数参数，静态分析不可解 → 可达性低置信度（<dynamic>）→ Phase 1.5 SubAgent 探索也无法确定 → 预期 P3 不改代码不建 PR，仅报告（动态调用路径）",
+ "target_cves": [
+  "CVE-2023-32681",
+  "CVE-2024-35195",
+  "CVE-2024-47081",
+  "CVE-2026-25645"
+ ]
+}

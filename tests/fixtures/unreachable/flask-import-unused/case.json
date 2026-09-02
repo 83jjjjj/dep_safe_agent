@@ -1,0 +1,14 @@
+{
+ "name": "flask-import-unused",
+ "behavior_class": "unreachable",
+ "pkg": "flask",
+ "vulnerable_version": "2.3.1",
+ "dep_file": "requirements.txt",
+ "must_fix": false,
+ "expect_pr": false,
+ "has_tests": false,
+ "notes": "import 了 flask 但代码从不使用 session/请求处理（只读 __version__ 做健康检查）——「import 漏洞包但未调用漏洞函数」的可达性边界：预期 P4 不改代码不建 PR，仅报告",
+ "target_cves": [
+  "CVE-2026-27205"
+ ]
+}

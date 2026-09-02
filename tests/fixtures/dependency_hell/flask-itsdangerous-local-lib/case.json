@@ -1,0 +1,18 @@
+{
+ "name": "flask-itsdangerous-local-lib",
+ "behavior_class": "dependency_hell",
+ "pkgs": [
+  {
+   "pkg": "flask",
+   "vulnerable_version": "2.2.5"
+  }
+ ],
+ "dep_file": "requirements.txt",
+ "must_fix": false,
+ "expect_pr": false,
+ "has_tests": false,
+ "notes": "合成构造的不可调和约束（机制全真实）：flask 修复版 3.1.3 要求 itsdangerous>=2.2.0，而案例自带本地包 local_lib 声明 itsdangerous<2.2.0（模拟项目内第三方上界约束），无交集 → 每次重试必败 → 3 次反馈后走 Issue。local_lib 为合成角色，pip 解析器行为 100% 真实",
+ "target_cves": [
+  "CVE-2026-27205"
+ ]
+}

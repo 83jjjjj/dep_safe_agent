@@ -1,0 +1,14 @@
+{
+ "name": "h11-unreachable",
+ "behavior_class": "unreachable",
+ "pkg": "h11",
+ "vulnerable_version": "0.12.0",
+ "dep_file": "requirements.txt",
+ "must_fix": false,
+ "expect_pr": false,
+ "has_tests": false,
+ "notes": "依赖声明存在漏洞但 app.py 纯标准库、完全不 import h11，触发条件不可达 → 预期 P4 不改代码不建 PR，仅报告",
+ "target_cves": [
+  "CVE-2025-43859"
+ ]
+}

@@ -1,0 +1,18 @@
+{
+ "name": "pydantic-typingextensions",
+ "behavior_class": "cascade_constraint",
+ "pkgs": [
+  {
+   "pkg": "pydantic",
+   "vulnerable_version": "1.10.2"
+  }
+ ],
+ "dep_file": "requirements.txt",
+ "must_fix": true,
+ "expect_pr": true,
+ "has_tests": false,
+ "notes": "约束链（已实测）：pydantic 1.10.2 允许 typing-extensions>=4.1.0（4.1.1 钉死可解析）；修复版 1.10.13 要求 >=4.2.0 → 冲突 → extra_pins；typing-extensions 4.1.1 无漏洞。B 无漏洞、纯约束驱动（extra_pins 重试），不带测试套件",
+ "target_cves": [
+  "CVE-2024-3772"
+ ]
+}
