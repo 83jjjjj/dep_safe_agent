@@ -26,6 +26,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -76,7 +77,25 @@ def load_trajectory(case_dir: Path) -> dict | None:
     ck = case_dir / ".depsafe" / "checkpoint.json"
     if not ck.exists():
         return None
-    return json.loads(ck.read_text(encoding="utf-8"))
+    traj = json.loads(ck.read_text(encoding="utf-8"))
+    # 多轮运行：轮转（每批≤5漏洞一轮）时旧轮次被 archive；按时间序合并早期轮次
+    # 消息，保留最新轮次的 exit_reason/budget_state（判定需要跨轮证据：
+    # 各轮的 scan / fix / PR 全部计入，不因消息重置而丢失）。
+    archives_dir = case_dir / ".depsafe" / "archives"
+    if archives_dir.is_dir():
+        parts = sorted(archives_dir.glob("checkpoint_*.json"))
+        if parts:
+            messages: list = []
+            for p in parts:
+                try:
+                    messages += json.loads(p.read_text(encoding="utf-8")).get("messages", [])
+                except (json.JSONDecodeError, OSError):
+                    continue
+            if messages:
+                merged = dict(traj)
+                merged["messages"] = messages + traj.get("messages", [])
+                traj = merged
+    return traj
 
 
 def extract_scan_vulns(trajectory: dict) -> list[dict]:
@@ -94,11 +113,18 @@ def extract_scan_vulns(trajectory: dict) -> list[dict]:
     return found
 
 
-def osv_ground_truth(specs: list[dict]) -> list[OsGroundTruth]:
-    """判定时现查 OSV（与 Agent 同源），得到 ground truth 漏洞集合"""
+def osv_ground_truth(specs: list[dict], target_cves: list[str] | None = None) -> list[OsGroundTruth]:
+    """判定时现查 OSV（与 Agent 同源），得到 ground truth 漏洞集合。
+
+    target_cves：案例设计时钉住的目标漏洞集合（case.json 的 target_cves 字段）。
+    提供时只保留目标 CVE——OSV 数据会漂移（新增/退订），现查全量会让非设计目标的
+    新增 CVE 破坏检测前置校验（假 detection_fail）。缺省 None = 现查全量（向后兼容）。
+    """
     out: list[OsGroundTruth] = []
     for spec in specs:
         for v in check_cve(spec["pkg"], spec["vulnerable_version"]):
+            if target_cves is not None and v.cve_id not in target_cves:
+                continue
             out.append(
                 OsGroundTruth(
                     cve_id=v.cve_id,
@@ -160,13 +186,32 @@ def github_api(case_dir: Path) -> tuple[httpx.Client, str, str]:
 
 
 def fetch_remote_state(client: httpx.Client, owner: str, repo: str) -> dict:
-    """远端状态：fix 分支、PR、Issue"""
-    state: dict[str, Any] = {"branches": [], "prs": [], "issues": []}
-    r = client.get(f"https://api.github.com/repos/{owner}/{repo}/branches", params={"per_page": 100})
-    if r.status_code == 200:
+    """远端状态：fix 分支、PR、Issue。
+
+    失败的调用结果置入 state["fetch_errors"]，绝不静默返回空——空远端会让 judge
+    对着"空世界"给出假阴性（曾导致分支/PR 明明存在却判 FAUL）。
+    """
+    state: dict[str, Any] = {"branches": [], "prs": [], "issues": [], "fetch_errors": []}
+
+    def _get(url: str, params: dict) -> httpx.Response:
+        for attempt in range(3):
+            try:
+                r = client.get(url, params=params)
+                if r.status_code == 200:
+                    return r
+                state["fetch_errors"].append(
+                    f"{url.split('/repos/')[-1]} -> {r.status_code} (attempt {attempt + 1})"
+                )
+            except httpx.HTTPError:
+                state["fetch_errors"].append(f"{url.split('/repos/')[-1]} -> HTTPError (attempt {attempt + 1})")
+            time.sleep(5 * (attempt + 1))  # 428/429/服务抖动后小退避重试
+        return None  # type: ignore[return-value]
+
+    r = _get(f"https://api.github.com/repos/{owner}/{repo}/branches", {"per_page": 100})
+    if r and r.status_code == 200:
         state["branches"] = [b["name"] for b in r.json() if b["name"].startswith("fix/security-update-")]
-    r = client.get(f"https://api.github.com/repos/{owner}/{repo}/pulls", params={"state": "all", "per_page": 100})
-    if r.status_code == 200:
+    r = _get(f"https://api.github.com/repos/{owner}/{repo}/pulls", {"state": "all", "per_page": 100})
+    if r and r.status_code == 200:
         for p in r.json():
             state["prs"].append(
                 {
@@ -177,8 +222,8 @@ def fetch_remote_state(client: httpx.Client, owner: str, repo: str) -> dict:
                     "labels": [l["name"] for l in p.get("labels", [])],
                 }
             )
-    r = client.get(f"https://api.github.com/repos/{owner}/{repo}/issues", params={"state": "all", "per_page": 100})
-    if r.status_code == 200:
+    r = _get(f"https://api.github.com/repos/{owner}/{repo}/issues", {"state": "all", "per_page": 100})
+    if r and r.status_code == 200:
         for i in r.json():
             if "pull_request" not in i:  # 排除 PR
                 state["issues"].append({"number": i["number"], "title": i.get("title", ""), "state": i["state"]})
@@ -197,8 +242,35 @@ def fetch_branch_dep_file(client: httpx.Client, owner: str, repo: str, branch: s
 
 
 def parse_pinned_version(content: str, pkg: str) -> str | None:
-    m = re.search(rf"^{re.escape(pkg)}==(\S+)$", content, re.MULTILINE)
-    return m.group(1) if m else None
+    """从依赖文件内容解析包名==版本。
+
+    兼容两种格式：
+    - requirements.txt/Pipfile：`pkg==1.2.3` 行首
+    - pyproject.toml dependencies：`    "pkg==1.2.3",`（缩进+引号）
+    """
+    # pyproject.toml dependencies：`    "pkg==1.2.3",`（缩进+引号+行尾逗号）
+    m = re.search(rf'^\s*"{re.escape(pkg)}==([\d.]+)"?,\s*$', content, re.MULTILINE)
+    if m:
+        return m.group(1)
+    # requirements.txt：`pkg==1.2.3` 行首
+    m = re.search(rf'^{re.escape(pkg)}==(\S+)$', content, re.MULTILINE)
+    if m:
+        return m.group(1)
+    # Pipfile：[packages] TOML 键值 `wheel = "==0.38.1"` 或 `wheel = "0.38.1"`
+    m = re.search(rf'^{re.escape(pkg)}\s*=\s*"?(==?)?([\d.]+)', content, re.MULTILINE)
+    return m.group(2) if m else None
+
+
+def branch_matches_case(branch: str, pkg: str, cve_id: str) -> bool:
+    """分支名是否本案例的修复分支：`fix/security-update-<pkg>-<cve>`。
+
+    包名与连字符/下划线视为等价（agent 可能用 typing_extensions / typing-extensions）。
+    唯一授权用途：并行安全锚定——同仓库并行时其他案例推的分支不能进入本案例判定。
+    """
+    prefix = "fix/security-update-"
+    stem = branch[len(prefix):] if branch.startswith(prefix) else branch
+    norm = lambda s: s.lower().replace("_", "-")  # noqa: E731
+    return norm(stem) == f"{norm(pkg)}-{cve_id.lower()}"
 
 
 def version_tuple(ver: str) -> tuple[int, ...]:
@@ -208,88 +280,91 @@ def version_tuple(ver: str) -> tuple[int, ...]:
 # ---------------------------------------------------------------- 回归测试重跑
 
 
-def run_regression_tests(case_dir: Path, branch: str) -> dict:
+def _case_remote_url(case_dir: Path) -> str:
+    """获取案例 git 仓库的 origin URL（含内联 token，供容器内 clone 使用）"""
+    r = subprocess.run(
+        ["git", "-C", str(case_dir), "remote", "get-url", "origin"],
+        capture_output=True, text=True, check=True,
+    )
+    return r.stdout.strip()
+
+
+def run_regression_tests(case_dir: Path, branch: str, dep_file: str = "requirements.txt") -> dict:
     """
     在容器内对 fix 分支重跑回归测试（stdlib unittest）。
 
-    实现：git worktree 检出分支 → 挂载进容器 → venv 安装 requirements.txt → unittest discover。
+    实现：容器内 git clone 远端分支 → venv 安装依赖（按 dep_file 类型）→ unittest discover。
+    全部发生在容器内，不污染宿主持有的 case_dir（避免 root 属主残留与 worktree 权限问题）。
     """
     result: dict = {"ran": False, "passed": False, "output": ""}
-    try:
-        subprocess.run(
-            ["git", "worktree", "add", "--detach", "-q", str(case_dir / "_judge_wt"), branch],
-            cwd=case_dir,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    except subprocess.CalledProcessError as e:
-        result["output"] = f"worktree 检出失败: {e.stderr.strip()}"
-        return result
-    worktree = case_dir / "_judge_wt"
-    try:
-        proxy = os.getenv("DEPSAFE_DOCKER_PROXY")
-        proxy_args = (
-            ["-e", f"HTTP_PROXY={proxy}", "-e", f"HTTPS_PROXY={proxy}"] if proxy else []
-        )
-        script = """
+    remote_url = _case_remote_url(case_dir)
+    proxy = os.getenv("DEPSAFE_DOCKER_PROXY")
+    proxy_args = ["-e", f"HTTP_PROXY={proxy}", "-e", f"HTTPS_PROXY={proxy}"] if proxy else []
+    if dep_file == "pyproject.toml":
+        # 不用 --no-build-isolation：venv 里没有 setuptools.build_meta，隔离构建反而会装
+        install_cmd = "/tmp/jvenv/bin/pip install -q -e . 2>/dev/null"
+        test_py = "/tmp/jvenv/bin/python"
+    elif dep_file == "Pipfile":
+        # pipenv 按 Pipfile.lock 安装（镜像已含 pipenv）；--ignore-pipfile 锁定版本确定性
+        install_cmd = "cd /tmp/wt && PIPENV_VENV_IN_PROJECT=1 pipenv install --ignore-pipfile >/dev/null 2>&1"
+        test_py = "/tmp/wt/.venv/bin/python"
+    else:
+        install_cmd = f"/tmp/jvenv/bin/pip install -q -r {dep_file} 2>/dev/null"
+        test_py = "/tmp/jvenv/bin/python"
+    script = f"""
 set -e
-python -m venv /workspace/_jvenv >/dev/null 2>&1
-/workspace/_jvenv/bin/pip install -q -r requirements.txt 2>/dev/null
-/workspace/_jvenv/bin/python -m unittest discover -v 2>&1
+rm -rf /tmp/wt /tmp/jvenv
+git -c credential.helper= clone -q --depth 1 -b {branch} '{remote_url}' /tmp/wt
+cd /tmp/wt
+python -m venv /tmp/jvenv >/dev/null 2>&1
+{install_cmd}
+# 分支无 tests 目录（如陈旧基座、或本就没测试）：不算回归失败，输出标记供 judge 识别
+if [ ! -d tests ]; then
+    echo RUN_REGRESSION_SKIP_NO_TESTS_DIR
+    exit 0
+fi
+{test_py} -m unittest discover -s tests -v 2>&1
 """
-        cmd = [
-            "docker", "run", "--rm",
-            "-v", f"{worktree}:/workspace",
-            "-w", "/workspace",
-            *proxy_args,
-            "depsafe-runner:latest", "bash", "-c", script,
-        ]
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    try:
+        proc = subprocess.run(
+            ["docker", "run", "--rm", *proxy_args, "depsafe-runner:latest", "bash", "-c", script],
+            capture_output=True, text=True, timeout=900,
+        )
         result["ran"] = True
         result["passed"] = proc.returncode == 0
         result["output"] = (proc.stdout + proc.stderr)[-2000:]
     except subprocess.TimeoutExpired:
-        result["output"] = "回归测试重跑超时（10 分钟）"
-    finally:
-        subprocess.run(["git", "worktree", "remove", "--force", str(worktree)], cwd=case_dir, capture_output=True)
-        subprocess.run(["git", "worktree", "prune"], cwd=case_dir, capture_output=True)
+        result["output"] = "回归测试重跑超时（15 分钟）"
+    except Exception as e:
+        result["output"] = f"回归测试重跑失败: {type(e).__name__}: {e}"
     return result
 
 
 def consistency_probe(case_dir: Path, branch: str) -> dict:
-    """一致性探针：fix 分支的 requirements.txt 能否被 pip-compile 干净解析"""
+    """一致性探针：fix 分支的依赖文件能否被 pip-compile 干净解析（容器内 clone 实现，同 regression）"""
     result: dict = {"ran": False, "consistent": False, "output": ""}
-    worktree = case_dir / "_judge_wt_probe"
+    remote_url = _case_remote_url(case_dir)
+    proxy = os.getenv("DEPSAFE_DOCKER_PROXY")
+    proxy_args = ["-e", f"HTTP_PROXY={proxy}", "-e", f"HTTPS_PROXY={proxy}"] if proxy else []
+    script = f"""
+set -e
+rm -rf /tmp/wt
+git -c credential.helper= clone -q --depth 1 -b {branch} '{remote_url}' /tmp/wt
+cd /tmp/wt
+pip-compile requirements.txt -o /tmp/probe.lock --no-header --no-annotate --quiet 2>&1
+"""
     try:
-        subprocess.run(
-            ["git", "worktree", "add", "--detach", "-q", str(worktree), branch],
-            cwd=case_dir,
-            check=True,
-            capture_output=True,
-            text=True,
+        proc = subprocess.run(
+            ["docker", "run", "--rm", *proxy_args, "depsafe-runner:latest", "bash", "-c", script],
+            capture_output=True, text=True, timeout=900,
         )
-    except subprocess.CalledProcessError as e:
-        result["output"] = f"worktree 检出失败: {e.stderr.strip()}"
-        return result
-    try:
-        proxy = os.getenv("DEPSAFE_DOCKER_PROXY")
-        proxy_args = (["-e", f"HTTP_PROXY={proxy}", "-e", f"HTTPS_PROXY={proxy}"] if proxy else [])
-        cmd = [
-            "docker", "run", "--rm",
-            "-v", f"{worktree}:/workspace",
-            "-w", "/workspace",
-            *proxy_args,
-            "depsafe-runner:latest", "bash", "-c",
-            "pip-compile requirements.txt -o /tmp/probe.lock --no-header --no-annotate --quiet 2>&1",
-        ]
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
         result["ran"] = True
         result["consistent"] = proc.returncode == 0
         result["output"] = (proc.stdout + proc.stderr)[-500:]
-    finally:
-        subprocess.run(["git", "worktree", "remove", "--force", str(worktree)], cwd=case_dir, capture_output=True)
-        subprocess.run(["git", "worktree", "prune"], cwd=case_dir, capture_output=True)
+    except subprocess.TimeoutExpired:
+        result["output"] = "一致性探针超时（15 分钟）"
+    except Exception as e:
+        result["output"] = f"一致性探针失败: {type(e).__name__}: {e}"
     return result
 
 
@@ -329,21 +404,70 @@ def judge(case: dict, trajectory: dict | None, truth: list[OsGroundTruth], remot
         "passed": recall >= 1.0,
     }
 
-    # ---- 远端证据 ----
-    fix_branches = remote["branches"]
+    # ---- 并行安全锚定：只认本案例真相 (pkg, cve) 对应的修复分支 ----
+    # 判定器按包名扫全部分支（聚合视图），同仓库并行时其他案例（含同包案例）推的
+    # 分支若混入，覆盖/PR/回归/漏修判定都会被污染（假阳性）。锚定后与案例无关的分支
+    # 天然排除；顺序跑时本案例自己的分支名恰好匹配，行为不变。
+    evidence: dict[str, Any] = {}
+    anchor_pairs = {(t.pkg, t.cve_id) for t in truth}
+    match_branch = lambda b: any(branch_matches_case(b, p, c) for p, c in anchor_pairs)  # noqa: E731
+    # 轨迹锚定：同一 (pkg, cve) 可能是不同案例的共享目标（如 pydantic-CVE-2024-3772 同时是
+    # pydantic-cve 与 h11-pydantic 的目标）——远端同名分支只能算本案例自己创建的。
+    # 只认「实际推送/PR 事件」中的分支名（fixer 结果 branch_name、create_github_pr 的 head_branch、
+    # bash 命令里的 git push），不认文本提及——避免模型表述污染锚定集。
+    traj_branches: set[str] = set()
+    if trajectory:
+        for m in trajectory.get("messages", []):
+            content = m.get("content")
+            if isinstance(content, str):
+                try:
+                    c = json.loads(content)
+                except (json.JSONDecodeError, TypeError):
+                    c = None
+                if isinstance(c, dict) and c.get("branch_name"):
+                    traj_branches.add(c["branch_name"])
+            for tc in m.get("tool_calls") or []:
+                fn = tc.get("function", {})
+                if fn.get("name") == "create_github_pr":
+                    try:
+                        args = json.loads(fn.get("arguments") or "{}")
+                    except json.JSONDecodeError:
+                        args = {}
+                    if args.get("head_branch"):
+                        traj_branches.add(args["head_branch"])
+                elif fn.get("name") == "bash":
+                    try:
+                        args = json.loads(fn.get("arguments") or "{}")
+                        cmd = str(args.get("command", ""))
+                    except json.JSONDecodeError:
+                        cmd = ""
+                    for mm in re.findall(r"git\s+push\b[^\n]*?(fix/security-update-[A-Za-z0-9_.-]+)", cmd):
+                        traj_branches.add(mm)
+    evidence["traj_branches"] = sorted(traj_branches)
+    def _owned(branch: str) -> bool:  # noqa: E731
+        return match_branch(branch) and (not traj_branches or branch in traj_branches)
+    # PR 的 head 分支可能不在 branches 列表（GitHub 接口一致性抖动，见 flask-2.3.2 PR#13），
+    # 但 contents API 按 ref 仍可读取 —— 一并纳入候选，避免"PR 存在但认不到分支"的误判
+    pr_heads = [p["head"] for p in remote["prs"] if _owned(p["head"])]
+    fix_branches = list(dict.fromkeys([b for b in remote["branches"] if _owned(b)] + pr_heads))
+    evidence["anchored_branches"] = fix_branches
+    evidence["pr_head_branches"] = pr_heads
+
+    # ---- 远端证据（按 ref 拉取每个锚定分支的依赖文件）----
     branch_versions: dict[str, dict[str, str | None]] = {}
     for b in fix_branches:
         content = fetch_branch_dep_file(client, owner, repo, b, dep_file)
         branch_versions[b] = {
             spec["pkg"]: parse_pinned_version(content, spec["pkg"]) if content else None for spec in specs
         }
-    evidence: dict[str, Any] = {"branch_versions": branch_versions}
+    evidence["branch_versions"] = branch_versions
+    anchored_versions = dict(branch_versions)
 
     # 覆盖判定：每个 ground truth CVE 是否有分支版本 >= 其最小修复版
     covered_cves: list[dict] = []
     for t in truth:
         best = None
-        for b, versions in branch_versions.items():
+        for b, versions in anchored_versions.items():
             bv = versions.get(t.pkg)
             if bv and t.min_fixed and version_tuple(bv) >= version_tuple(t.min_fixed):
                 if best is None or version_tuple(bv) < version_tuple(best[1]):
@@ -368,7 +492,8 @@ def judge(case: dict, trajectory: dict | None, truth: list[OsGroundTruth], remot
                 continue  # 修复版本身在大版本，升级大版本是必须的
             if version_tuple(c["fixed_by"][1])[0] > cur_major:
                 over_major_cves.append(c["cve_id"])
-    evidence["over_major"] = bool(over_major_cves)
+    over_major = bool(over_major_cves)
+    evidence["over_major"] = over_major
     evidence["over_major_cves"] = over_major_cves
 
     # PR 卫生
@@ -433,13 +558,17 @@ def judge(case: dict, trajectory: dict | None, truth: list[OsGroundTruth], remot
             reasons.append("存在同 major 修复版却跨大版本升级")
         if not pr_ok:
             reasons.append("PR 卫生不达标（应建未建 / 标签缺失 / draft 状态不符 / 不应建却建了）")
+        # covering_branches 需在 cascade 探针前定义（has_tests 不存在时也要有值）
+        covering_branches = [c["fixed_by"][0] for c in covered_cves if c["fixed_by"]]
         if case.get("has_tests") and (case_dir / "tests").exists():
-            covering_branches = [c["fixed_by"][0] for c in covered_cves if c["fixed_by"]]
             tests: dict[str, dict] = {}
             for b in sorted(set(covering_branches)):
-                tests[b] = run_regression_tests(case_dir, b)
+                reg = run_regression_tests(case_dir, b, dep_file)
+                if "RUN_REGRESSION_SKIP_NO_TESTS_DIR" in reg.get("output", ""):
+                    reg["skipped"] = True  # 分支无 tests 目录：不判回归失败
+                tests[b] = reg
             evidence["regression_tests"] = tests
-            if not any(t["passed"] for t in tests.values()):
+            if tests and not any(t.get("passed") for t in tests.values()):
                 reasons.append("回归测试重跑未通过")
         if behavior.startswith("cascade"):
             probe_target = covering_branches[0] if covering_branches else None
@@ -472,7 +601,7 @@ def main() -> int:
 
     case = load_case(case_dir)
     trajectory = load_trajectory(case_dir)
-    truth = osv_ground_truth(case_pkg_specs(case))
+    truth = osv_ground_truth(case_pkg_specs(case), case.get("target_cves"))
     client, owner, repo = github_api(case_dir)
     remote = fetch_remote_state(client, owner, repo)
     result = judge(case, trajectory, truth, remote, case_dir)
