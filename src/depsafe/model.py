@@ -1,5 +1,6 @@
 import json
 import logging
+from collections.abc import Mapping
 
 import litellm
 from jinja2 import StrictUndefined, Template
@@ -28,16 +29,40 @@ from depsafe.schemas import (
     ScanVulnsInput,
 )
 
+def compact_schema(schema: dict, max_desc: int = 60) -> dict:
+    """压缩发给模型的工具 schema，降低每步固定开销：
+    - 删除 JSON Schema 生成的 title 字段（无信息增益，仅占 token）
+    - description 截断到 max_desc 字符（长语义由系统模板标准工作流承载）
+    """
+    def walk(node):
+        if isinstance(node, dict):
+            out = {}
+            for k, v in node.items():
+                if k == "title":
+                    continue
+                if k == "description" and isinstance(v, str) and len(v) > max_desc:
+                    v = v[:max_desc] + "..."
+                out[k] = walk(v)
+            return out
+        if isinstance(node, list):
+            return [walk(x) for x in node]
+        return node
+    return walk(schema)
+
+
 TOOLS_SCHEMA = [
-    BASH_TOOL_SCHEMA,
-    SCAN_VULNS_SCHEMA,
-    GET_CHANGELOG_SCHEMA,
-    ANALYZE_REACHABILITY_SCHEMA,
-    ASSESS_PRIORITY_SCHEMA,
-    APPLY_FIX_AND_VERIFY_SCHEMA,
-    CREATE_GITHUB_ISSUE_SCHEMA,
-    CREATE_GITHUB_PR_SCHEMA,
-    CREATE_SECURITY_REPORT_SCHEMA,
+    compact_schema(s)
+    for s in [
+        BASH_TOOL_SCHEMA,
+        SCAN_VULNS_SCHEMA,
+        GET_CHANGELOG_SCHEMA,
+        ANALYZE_REACHABILITY_SCHEMA,
+        ASSESS_PRIORITY_SCHEMA,
+        APPLY_FIX_AND_VERIFY_SCHEMA,
+        CREATE_GITHUB_ISSUE_SCHEMA,
+        CREATE_GITHUB_PR_SCHEMA,
+        CREATE_SECURITY_REPORT_SCHEMA,
+    ]
 ]
 
 
@@ -57,9 +82,17 @@ class LitellmModel:
         "create_security_report": CreateSecurityReportInput,
     }
 
-    def __init__(self, model_name: str, api_key: str):
+    def __init__(
+        self,
+        model_name: str,
+        api_key: str | None,
+        base_url: str | None = None,
+        extra_headers: Mapping[str, str] | None = None,
+    ):
         self.model_name = model_name
         self.api_key = api_key
+        self.base_url = base_url
+        self.extra_headers = dict(extra_headers or {})
 
     def query(
         self,
@@ -73,9 +106,12 @@ class LitellmModel:
             "model": self.model_name,
             "messages": messages,
             "tools": tools,
-            "base_url": "https://api.deepseek.com",
             "api_key": self.api_key,
         }
+        if self.base_url:
+            completion_kwargs["base_url"] = self.base_url
+        if self.extra_headers:
+            completion_kwargs["extra_headers"] = self.extra_headers
         if response_format:
             completion_kwargs["response_format"] = response_format
         try:

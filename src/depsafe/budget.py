@@ -17,13 +17,15 @@ class TokenBudget:
     # 常见模型的上下文窗口大小映射
     _CONTEXT_WINDOWS: dict[str, int] = {
         "deepseek/deepseek-v4-flash": 1000000,
+        "openai/gpt-5.6-terra": 1000000,
     }
 
-    def __init__(self, model_name: str, usage_ratio: float = 0.7):
+    def __init__(self, model_name: str, usage_ratio: float = 0.85):
         """
         Args:
             model_name: 模型名称，用于查询上下文窗口大小
-            usage_ratio: 安全使用比例，默认 70%（留 30% 给最后几轮降级操作）
+            usage_ratio: 安全使用比例，默认 85%（实测真实单步上下文远小于窗口，
+                该计数实为累计成本护栏，0.85 在 1M 窗口下无溢出风险，42 步可达 ~55 步）
         """
         self.model_name = model_name
         self.context_limit = self._get_context_window(model_name)
@@ -66,7 +68,7 @@ class TokenBudget:
     def from_dict(cls, data: dict) -> "TokenBudget":
         budget = cls(
             model_name=data["model_name"],
-            usage_ratio=data.get("usage_ratio", 0.7),
+            usage_ratio=data.get("usage_ratio", 0.85),
         )
         budget.input_token = data.get("input_token", 0)
         budget.output_token = data.get("output_token", 0)

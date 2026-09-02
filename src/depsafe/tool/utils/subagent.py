@@ -48,7 +48,7 @@ class SubAgent:
         self.env = env
         self.step_counter = step_counter
         self.cost_budget = cost_budget
-        self.token_budget = TokenBudget(self.model.model_name, usage_ratio=0.7)
+        self.token_budget = TokenBudget(self.model.model_name)  # usage_ratio 见 budget.py 默认（0.85）
         self.step_limit = step_limit
         self.n_calls = 0
         self.n_consecutive_format_errors = 0

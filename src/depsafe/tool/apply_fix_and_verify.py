@@ -46,6 +46,9 @@ def _prepare_fix_branch(pkg_name: str, cve_id: str) -> str:
     remote_exists = bool(result.stdout.strip())
     if remote_exists:
         try:
+            # 先刷新 main 追踪指针：setup 的推 main 不更新本地 origin/main 引用，
+            # 否则 reset --hard origin/main 会落在陈旧基座上（分支缺当前模板文件）
+            subprocess.run(["git", "fetch", "origin", "main"], check=True, capture_output=True)
             subprocess.run(["git", "fetch", "origin", branch], check=True, capture_output=True)
             subprocess.run(["git", "checkout", branch], check=True, capture_output=True)
             subprocess.run(["git", "reset", "--hard", "origin/main"], check=True, capture_output=True)
@@ -139,6 +142,8 @@ def _update_pyproject(pkg_name: str, version: str) -> tuple[bool, str | None]:
         except Exception as e:
             return False, f"Failed to write pyproject.toml: {e}"
         return updated, None
+    # 没命中任何格式也要返回（否则隐式 None 会让调用方 TypeError——flask-pyyaml 运行中经 agent 轨迹确认）
+    return False, None
 
 
 def _update_requirements(pkg_name: str, version: str) -> tuple[bool, str | None]:
@@ -195,7 +200,7 @@ def _regenerate_lockfile() -> tuple[bool, str]:
     按优先级尝试: uv -> poetry -> pip-tools -> pipenv
     """
     lockfile_tools = [
-        ("uv", ["uv", "lock"], ["pyproject.toml", "requirements.txt"]),
+        ("uv", ["uv", "lock"], ["pyproject.toml"]),  # uv 只服务 pyproject 项目；requirements 项目走 pip-compile
         ("poetry", ["poetry", "lock", "--no-update"], ["pyproject.toml"]),
         ("pip-compile", ["pip-compile", "requirements.txt", "-o", "requirements.lock", "--no-header", "--no-annotate"], ["requirements.txt"]),
         ("pipenv", ["pipenv", "lock"], ["Pipfile"]),
@@ -236,8 +241,10 @@ def _ensure_venv(venv_path: Path) -> Path:
 def _install_package(venv_python: Path, spec: str) -> tuple[bool, str]:
     """在隔离 venv 中安装，spec 支持 'pkg==version' 或 '-r requirements.txt'，返回 (成功, 错误信息)"""
     try:
+        # pip 的 argparse 会把 "-r requirements.txt" 单 token 解析成值 " requirements.txt"（前导空格），必须拆成两个 argv
+        install_args = spec.split(" ", 1) if spec.startswith("-r ") else [spec]
         result = subprocess.run(
-            [str(venv_python), "-m", "pip", "install", spec, "--quiet"],
+            [str(venv_python), "-m", "pip", "install", *install_args, "--quiet"],
             capture_output=True,
             text=True,
             timeout=120,

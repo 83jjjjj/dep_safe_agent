@@ -25,3 +25,13 @@ reports/
 
 # Eval Fixtures 的 Git 状态（fixture 以纯文件形式纳入版本管理）
 tests/fixtures/*/.git/
+tests/fixtures/*/*/.git/
+
+# DepSafe Agent 运行产物（评估运行后遗留，不入库）
+.depsafe/
+.venv-fix-verify/
+.agent_runner.py
+dependency_security_report.md
+SECURITY_FIX_REPORT.md
+tests/eval/results/
+.recovery_*/

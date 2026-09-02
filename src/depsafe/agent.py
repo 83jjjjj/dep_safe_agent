@@ -24,8 +24,22 @@ class DepSafeAgent:
 
     def __init__(self):
         self.config = yaml.safe_load(Path(package_dir / "config" / "default.yaml").read_text(encoding="utf-8"))["agent"]
-        self.model = LitellmModel("deepseek/deepseek-v4-flash", os.getenv("DEEPSEEK_API_KEY"))
-        self.token_budget = TokenBudget(self.model.model_name, usage_ratio=0.7)
+        model_name = os.getenv("DEPSAFE_MODEL", "deepseek/deepseek-v4-flash")
+        api_key = os.getenv("DEPSAFE_API_KEY") or os.getenv("OPENAI_API_KEY") or os.getenv("DEEPSEEK_API_KEY")
+        base_url = os.getenv("DEPSAFE_BASE_URL") or os.getenv("OPENAI_BASE_URL")
+        if base_url is None and model_name.startswith("deepseek/"):
+            base_url = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+        extra_headers = {}
+        if base_url and "172.27.64.1" in base_url:
+            extra_headers["User-Agent"] = "Mozilla/5.0"
+            no_proxy = os.getenv("NO_PROXY") or os.getenv("no_proxy") or ""
+            entries = [entry for entry in no_proxy.split(",") if entry]
+            for entry in ("127.0.0.1", "localhost", "172.27.64.1"):
+                if entry not in entries:
+                    entries.append(entry)
+            os.environ["NO_PROXY"] = os.environ["no_proxy"] = ",".join(entries)
+        self.model = LitellmModel(model_name, api_key, base_url, extra_headers=extra_headers)
+        self.token_budget = TokenBudget(self.model.model_name)  # usage_ratio 见 budget.py 默认（0.85）
         self.step_counter = StepCounter(step_limit=150)
         self.cost_budget = CostBudget(cost_limit=10.0)
         self.vuln_budget = VulnBudget(vuln_limit=5)
@@ -134,8 +148,14 @@ class DepSafeAgent:
         self.config["task"] = task or ""
         self.config.update(platform.uname()._asdict())
         resuming = self._try_recover()
-        # 外层控制每次循环只处理vuln_limit个漏洞
+        # 外层控制每次循环只处理vuln_limit个漏洞（多轮：漏洞池清空或预算耗尽才终止）。
+        # 设计约定：每轮结束后若仍有未处理漏洞（overflow/未覆盖），reset 消息与本地
+        # 预算后开启下一轮——任务目标与消息列表重置是合理的（漏洞间独立）；
+        # covered/overflow 保留在 vuln_budget 中驱动下一轮推进。
+        round_count = 0
+        max_rounds = self.config.get("max_rounds", 8)  # 防连续轮次死循环的兜底
         while True:
+            round_count += 1
             if not resuming:
                 self.step_counter.reset()
                 self.token_budget.reset()
@@ -179,7 +199,22 @@ class DepSafeAgent:
                 if self.messages[-1].get("role") == "exit":
                     break
             if self.messages[-1].get("role") == "exit":
-                break
+                # 轮次结束：漏洞池清空、任一预算耗尽或轮次超限 → 真正终止；
+                # 否则开启下一轮（外层 reset 消息/任务目标，扫描器从 overflow 继续）
+                if (
+                    self.vuln_budget.is_all_done()
+                    or self.step_counter.is_exhausted()
+                    or self.token_budget.is_exhausted()
+                    or self.cost_budget.is_exhausted()
+                    or round_count > max_rounds
+                ):
+                    break
+                # 轮转前归档本轮轨迹：checkpoint.json 将被下一轮覆盖，
+                # 判定（judge）需要跨轮证据（每轮的 scan/fix/PR 都算数）
+                archived = self.trajectory.archive()
+                if archived:
+                    self.logger.info("Round %d archived to %s", round_count, archived.name)
+                continue
             # 再次兜住无漏洞的情况
             if self.vuln_budget.is_all_done():
                 break
